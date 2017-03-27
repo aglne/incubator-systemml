@@ -28,7 +28,6 @@ import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.hops.DataOp;
 import org.apache.sysml.hops.Hop;
 import org.apache.sysml.hops.Hop.DataOpTypes;
-import org.apache.sysml.hops.Hop.VisitStatus;
 import org.apache.sysml.hops.HopsException;
 import org.apache.sysml.hops.Hop.FileFormatTypes;
 import org.apache.sysml.hops.OptimizerUtils;
@@ -45,7 +44,6 @@ import org.apache.sysml.hops.recompile.Recompiler;
 import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.lops.LopProperties.ExecType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysml.runtime.controlprogram.Program;
 import org.apache.sysml.runtime.controlprogram.ProgramBlock;
@@ -106,7 +104,7 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 
 	@Override
 	public GDFGraph optimize(GDFGraph gdfgraph, Summary summary) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException, HopsException, LopsException 
+		throws DMLRuntimeException, HopsException, LopsException 
 	{
 		Timing time = new Timing(true);
 		
@@ -163,14 +161,14 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 	 * Core dynamic programming enumeration algorithm
 	 * for global data flow optimization.
 	 * 
-	 * @param node
-	 * @param maxCosts
-	 * @return
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
+	 * @param node the GDF node
+	 * @param memo the memo structure
+	 * @param maxCosts max costs
+	 * @return the plan set
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static PlanSet enumOpt( GDFNode node, MemoStructure memo, double maxCosts )
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		//memoization of already enumerated subgraphs
 		if( memo.constainsEntry(node) )
@@ -205,16 +203,8 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 		return P;
 	}
 	
-	/**
-	 * 
-	 * @param node
-	 * @param memo 
-	 * @return
-	 * @throws DMLUnsupportedOperationException 
-	 * @throws DMLRuntimeException 
-	 */
 	private static PlanSet enumNodePlans( GDFNode node, MemoStructure memo, double maxCosts ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		ArrayList<Plan> plans = new ArrayList<Plan>();
 		ExecType CLUSTER = OptimizerUtils.isSparkExecutionMode() ? ExecType.SPARK : ExecType.MR;
@@ -310,11 +300,6 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 		return new PlanSet(plans);
 	}
 	
-	/**
-	 * 
-	 * @param node
-	 * @param plans
-	 */
 	private static void enumHopNodePlans(GDFNode node, ArrayList<Plan> plans)
 	{ 
 		ExecType CLUSTER = OptimizerUtils.isSparkExecutionMode() ? ExecType.SPARK : ExecType.MR;
@@ -342,10 +327,6 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 		}
 	}
 	
-	/**
-	 * 
-	 * @param plans
-	 */
 	private static void pruneInvalidPlans( PlanSet plans )
 	{
 		ArrayList<Plan> valid = new ArrayList<Plan>();
@@ -389,15 +370,8 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 		plans.setPlans( valid );
 	}
 	
-	/**
-	 * 
-	 * @param plans
-	 * @param maxCosts 
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
 	private static void pruneSuboptimalPlans( PlanSet plans, double maxCosts ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		//costing of all plans incl containment check
 		for( Plan p : plans.getPlans() ) {
@@ -441,15 +415,8 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 		plans.setPlans(optimal);
 	}
 	
-	/**
-	 * 
-	 * @param p
-	 * @return
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
 	private static double costRuntimePlan(Plan p) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		Program prog = p.getNode().getProgram();
 		if( prog == null )
@@ -483,7 +450,7 @@ public class GDFEnumOptimizer extends GlobalOptimizer
 				if( !(currentHop instanceof DataOp && ((DataOp)currentHop).isWrite()) ){
 					ArrayList<Hop> newRoots = new ArrayList<Hop>();
 					tmpHop = new DataOp("_tmp", currentHop.getDataType(), currentHop.getValueType(), currentHop, DataOpTypes.TRANSIENTWRITE, "tmp");
-					tmpHop.setVisited(VisitStatus.DONE); //ensure recursive visitstatus reset on recompile
+					tmpHop.setVisited(); //ensure recursive visitstatus reset on recompile
 					newRoots.add(tmpHop);
 					pb.getStatementBlock().set_hops(newRoots);
 				}

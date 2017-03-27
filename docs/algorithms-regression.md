@@ -80,6 +80,17 @@ efficient when the number of features $m$ is relatively small
 **Linear Regression - Direct Solve**:
 
 <div class="codetabs">
+<div data-lang="Python" markdown="1">
+{% highlight python %}
+from systemml.mllearn import LinearRegression
+# C = 1/reg (to disable regularization, use float("inf"))
+lr = LinearRegression(sqlCtx, fit_intercept=True, normalize=False, C=float("inf"), solver='direct-solve')
+# X_train, y_train and X_test can be NumPy matrices or Pandas DataFrame or SciPy Sparse Matrix
+y_test = lr.fit(X_train, y_train)
+# df_train is DataFrame that contains two columns: "features" (of type Vector) and "label". df_test is a DataFrame that contains the column "features"
+y_test = lr.fit(df_train)
+{% endhighlight %}
+</div>
 <div data-lang="Hadoop" markdown="1">
     hadoop jar SystemML.jar -f LinearRegDS.dml
                             -nvargs X=<file>
@@ -111,6 +122,17 @@ efficient when the number of features $m$ is relatively small
 **Linear Regression - Conjugate Gradient**:
 
 <div class="codetabs">
+<div data-lang="Python" markdown="1">
+{% highlight python %}
+from systemml.mllearn import LinearRegression
+# C = 1/reg (to disable regularization, use float("inf"))
+lr = LinearRegression(sqlCtx, fit_intercept=True, normalize=False, max_iter=100, tol=0.000001, C=float("inf"), solver='newton-cg')
+# X_train, y_train and X_test can be NumPy matrices or Pandas DataFrames or SciPy Sparse matrices
+y_test = lr.fit(X_train, y_train)
+# df_train is DataFrame that contains two columns: "features" (of type Vector) and "label". df_test is a DataFrame that contains the column "features"
+y_test = lr.fit(df_train)
+{% endhighlight %}
+</div>
 <div data-lang="Hadoop" markdown="1">
     hadoop jar SystemML.jar -f LinearRegCG.dml
                             -nvargs X=<file>
@@ -196,6 +218,30 @@ SystemML Language Reference for details.
 **Linear Regression - Direct Solve**:
 
 <div class="codetabs">
+<div data-lang="Python" markdown="1">
+{% highlight python %}
+import numpy as np
+from sklearn import datasets
+from systemml.mllearn import LinearRegression
+from pyspark.sql import SQLContext
+# Load the diabetes dataset
+diabetes = datasets.load_diabetes()
+# Use only one feature
+diabetes_X = diabetes.data[:, np.newaxis, 2]
+# Split the data into training/testing sets
+diabetes_X_train = diabetes_X[:-20]
+diabetes_X_test = diabetes_X[-20:]
+# Split the targets into training/testing sets
+diabetes_y_train = diabetes.target[:-20]
+diabetes_y_test = diabetes.target[-20:]
+# Create linear regression object
+regr = LinearRegression(sqlCtx, solver='direct-solve')
+# Train the model using the training sets
+regr.fit(diabetes_X_train, diabetes_y_train)
+# The mean square error
+print("Residual sum of squares: %.2f" % np.mean((regr.predict(diabetes_X_test) - diabetes_y_test) ** 2))
+{% endhighlight %}
+</div>
 <div data-lang="Hadoop" markdown="1">
     hadoop jar SystemML.jar -f LinearRegDS.dml
                             -nvargs X=/user/ml/X.mtx
@@ -227,6 +273,30 @@ SystemML Language Reference for details.
 **Linear Regression - Conjugate Gradient**:
 
 <div class="codetabs">
+<div data-lang="Python" markdown="1">
+{% highlight python %}
+import numpy as np
+from sklearn import datasets
+from systemml.mllearn import LinearRegression
+from pyspark.sql import SQLContext
+# Load the diabetes dataset
+diabetes = datasets.load_diabetes()
+# Use only one feature
+diabetes_X = diabetes.data[:, np.newaxis, 2]
+# Split the data into training/testing sets
+diabetes_X_train = diabetes_X[:-20]
+diabetes_X_test = diabetes_X[-20:]
+# Split the targets into training/testing sets
+diabetes_y_train = diabetes.target[:-20]
+diabetes_y_test = diabetes.target[-20:]
+# Create linear regression object
+regr = LinearRegression(sqlCtx, solver='newton-cg')
+# Train the model using the training sets
+regr.fit(diabetes_X_train, diabetes_y_train)
+# The mean square error
+print("Residual sum of squares: %.2f" % np.mean((regr.predict(diabetes_X_test) - diabetes_y_test) ** 2))
+{% endhighlight %}
+</div>
 <div data-lang="Hadoop" markdown="1">
     hadoop jar SystemML.jar -f LinearRegCG.dml
                             -nvargs X=/user/ml/X.mtx

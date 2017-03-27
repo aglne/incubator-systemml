@@ -22,7 +22,6 @@ package org.apache.sysml.runtime.instructions.mr;
 import java.util.ArrayList;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
@@ -33,10 +32,6 @@ import org.apache.sysml.runtime.matrix.mapred.IndexedMatrixValue;
 import org.apache.sysml.runtime.matrix.operators.AggregateUnaryOperator;
 import org.apache.sysml.runtime.matrix.operators.BinaryOperator;
 
-
-/**
- * 
- */
 public class BinUaggChainInstruction extends UnaryInstruction 
 {
 	
@@ -47,15 +42,7 @@ public class BinUaggChainInstruction extends UnaryInstruction
 	//reused intermediates  
 	private MatrixIndexes _tmpIx = null;
 	private MatrixValue _tmpVal = null;
-	
-	/**
-	 * 
-	 * @param bop
-	 * @param uaggop
-	 * @param in1
-	 * @param out
-	 * @param istr
-	 */
+
 	public BinUaggChainInstruction(BinaryOperator bop, AggregateUnaryOperator uaggop, byte in1, byte out, String istr)
 	{
 		super(null, in1, out, istr);
@@ -69,13 +56,7 @@ public class BinUaggChainInstruction extends UnaryInstruction
 		mrtype = MRINSTRUCTION_TYPE.BinUaggChain;
 		instString = istr;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static BinUaggChainInstruction parseInstruction( String str ) 
 		throws DMLRuntimeException 
 	{		
@@ -96,7 +77,7 @@ public class BinUaggChainInstruction extends UnaryInstruction
 	@Override
 	public void processInstruction(Class<? extends MatrixValue> valueClass, CachedValueMap cachedValues, 
 			           IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		ArrayList<IndexedMatrixValue> blkList = cachedValues.get( input );
 		if( blkList == null )

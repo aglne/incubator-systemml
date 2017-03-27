@@ -25,11 +25,11 @@ import org.apache.sysml.hops.DataOp;
 import org.apache.sysml.hops.Hop;
 import org.apache.sysml.hops.Hop.DataOpTypes;
 import org.apache.sysml.hops.Hop.FileFormatTypes;
-import org.apache.sysml.hops.Hop.VisitStatus;
 import org.apache.sysml.hops.HopsException;
 import org.apache.sysml.parser.DataIdentifier;
 import org.apache.sysml.parser.StatementBlock;
 import org.apache.sysml.parser.VariableSet;
+import org.apache.sysml.runtime.controlprogram.caching.MatrixObject.UpdateType;
 
 /**
  * Rule: Split Hop DAG after CSV reads with unknown size. This is
@@ -72,13 +72,13 @@ public class RewriteSplitDagUnknownCSVRead extends StatementBlockRewriteRule
 					long rlen = reblock.getDim1();
 					long clen = reblock.getDim2();
 					long nnz = reblock.getNnz();
-					boolean updateInPlace = c.getUpdateInPlace();
+					UpdateType update = c.getUpdateType();
 					long brlen = reblock.getRowsInBlock();
 					long bclen = reblock.getColsInBlock();
 	
 					//create new transient read
 					DataOp tread = new DataOp(reblock.getName(), reblock.getDataType(), reblock.getValueType(),
-		                    DataOpTypes.TRANSIENTREAD, null, rlen, clen, nnz, updateInPlace, brlen, bclen);
+		                    DataOpTypes.TRANSIENTREAD, null, rlen, clen, nnz, update, brlen, bclen);
 					HopRewriteUtils.copyLineNumbers(reblock, tread);
 					
 					//replace reblock with transient read
@@ -86,15 +86,13 @@ public class RewriteSplitDagUnknownCSVRead extends StatementBlockRewriteRule
 					for( int i=0; i<parents.size(); i++ )
 					{
 						Hop parent = parents.get(i);
-						int pos = HopRewriteUtils.getChildReferencePos(parent, reblock);
-						HopRewriteUtils.removeChildReferenceByPos(parent, reblock, pos);
-						HopRewriteUtils.addChildReference(parent, tread, pos);
+						HopRewriteUtils.replaceChildReference(parent, reblock, tread);
 					}
 					
 					//add reblock sub dag to first statement block
 					DataOp twrite = new DataOp(reblock.getName(), reblock.getDataType(), reblock.getValueType(),
 							                   reblock, DataOpTypes.TRANSIENTWRITE, null);
-					twrite.setOutputParams(rlen, clen, nnz, updateInPlace, brlen, bclen);
+					twrite.setOutputParams(rlen, clen, nnz, update, brlen, bclen);
 					HopRewriteUtils.copyLineNumbers(reblock, twrite);
 					sb1hops.add(twrite);
 					
@@ -126,11 +124,6 @@ public class RewriteSplitDagUnknownCSVRead extends StatementBlockRewriteRule
 		return ret;
 	}
 	
-	/**
-	 * 
-	 * @param roots
-	 * @param cand
-	 */
 	private void collectCSVReadHopsUnknownSize( ArrayList<Hop> roots, ArrayList<Hop> cand )
 	{
 		if( roots == null )
@@ -141,14 +134,9 @@ public class RewriteSplitDagUnknownCSVRead extends StatementBlockRewriteRule
 			collectCSVReadHopsUnknownSize(root, cand);
 	}
 	
-	/**
-	 * 
-	 * @param root
-	 * @param cand
-	 */
 	private void collectCSVReadHopsUnknownSize( Hop hop, ArrayList<Hop> cand )
 	{
-		if( hop.getVisited() == VisitStatus.DONE )
+		if( hop.isVisited() )
 			return;
 		
 		//collect persistent reads (of type csv, with unknown size)
@@ -170,6 +158,6 @@ public class RewriteSplitDagUnknownCSVRead extends StatementBlockRewriteRule
 			for( Hop c : hop.getInput() )
 				collectCSVReadHopsUnknownSize(c, cand);
 		
-		hop.setVisited(VisitStatus.DONE);
+		hop.setVisited();
 	}
 }

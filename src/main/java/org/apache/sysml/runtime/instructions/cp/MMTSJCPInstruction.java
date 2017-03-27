@@ -21,16 +21,11 @@ package org.apache.sysml.runtime.instructions.cp;
 
 import org.apache.sysml.lops.MMTSJ.MMTSJType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 
-/**
- * 
- * 
- */
 public class MMTSJCPInstruction extends UnaryCPInstruction
 {	
 	
@@ -44,13 +39,7 @@ public class MMTSJCPInstruction extends UnaryCPInstruction
 		_type = type;
 		_numThreads = k;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static MMTSJCPInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -71,7 +60,7 @@ public class MMTSJCPInstruction extends UnaryCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		//get inputs
 		MatrixBlock matBlock1 = ec.getMatrixInput(input1.getName());

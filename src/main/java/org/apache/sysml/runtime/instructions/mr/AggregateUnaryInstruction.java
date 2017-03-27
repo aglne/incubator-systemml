@@ -22,7 +22,6 @@ package org.apache.sysml.runtime.instructions.mr;
 import java.util.ArrayList;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.functionobjects.ReduceDiag;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
@@ -48,13 +47,7 @@ public class AggregateUnaryInstruction extends UnaryMRInstructionBase
 		
 		_dropCorr = dropCorr;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static AggregateUnaryInstruction parseInstruction ( String str ) throws DMLRuntimeException {
 		
 		InstructionUtils.checkNumFields ( str, 3 );
@@ -74,7 +67,7 @@ public class AggregateUnaryInstruction extends UnaryMRInstructionBase
 	public void processInstruction(Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput, 
 			int blockRowFactor, int blockColFactor)
-			throws DMLUnsupportedOperationException, DMLRuntimeException {
+			throws DMLRuntimeException {
 		
 		ArrayList<IndexedMatrixValue> blkList = cachedValues.get(input);
 		if( blkList != null )

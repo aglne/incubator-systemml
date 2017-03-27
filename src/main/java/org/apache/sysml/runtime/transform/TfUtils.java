@@ -37,9 +37,11 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.wink.json4j.JSONException;
 import org.apache.wink.json4j.JSONObject;
 import org.apache.sysml.conf.ConfigurationManager;
+import org.apache.sysml.lops.Lop;
 import org.apache.sysml.parser.DataExpression;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.io.MatrixReader;
 import org.apache.sysml.runtime.matrix.CSVReblockMR;
 import org.apache.sysml.runtime.matrix.CSVReblockMR.OffsetCount;
@@ -53,12 +55,56 @@ public class TfUtils implements Serializable{
 	
 	private static final long serialVersionUID = 526252850872633125L;
 
-	public static final String TXMTD_SEP 	     = ",";
-	public static final String TXMTD_COLTYPES 	 = "coltypes.csv";	
+	protected enum ColumnTypes { 
+		SCALE,
+		NOMINAL,
+		ORDINAL,
+		DUMMYCODED;
+	
+		protected byte toID() { 
+			switch(this) {
+				case SCALE: return 1;
+				case NOMINAL: return 2;
+				case ORDINAL: return 3;
+				// Ideally, dummycoded columns should be of a different type. Treating them as SCALE is incorrect, semantically.
+				case DUMMYCODED: return 1; 
+				default:
+					throw new RuntimeException("Invalid Column Type: " + this);
+			}
+		}	
+	}
+	
+	//transform methods
+	public static final String TXMETHOD_IMPUTE    = "impute";
+	public static final String TXMETHOD_RECODE    = "recode";
+	public static final String TXMETHOD_BIN       = "bin";
+	public static final String TXMETHOD_DUMMYCODE = "dummycode";
+	public static final String TXMETHOD_SCALE     = "scale";
+	public static final String TXMETHOD_OMIT      = "omit";
+	public static final String TXMETHOD_MVRCD     = "mvrcd";
+		
+	//transform meta data constants (frame-based transform)
+	public static final String TXMTD_MVPREFIX = "#Meta"+Lop.DATATYPE_PREFIX+"MV";
+	public static final String TXMTD_NDPREFIX = "#Meta"+Lop.DATATYPE_PREFIX+"ND";
+	
+	//transform meta data constants (old file-based transform)
+	public static final String TXMTD_SEP         = ",";
+	public static final String TXMTD_COLTYPES    = "coltypes.csv";	
 	public static final String TXMTD_COLNAMES    = "column.names";
 	public static final String TXMTD_DC_COLNAMES = "dummycoded.column.names";	
-	public static final String TXMTD_RCD_MAP_SUFFIX 	 = ".map";
+	public static final String TXMTD_RCD_MAP_SUFFIX      = ".map";
 	public static final String TXMTD_RCD_DISTINCT_SUFFIX = ".ndistinct";
+	public static final String TXMTD_BIN_FILE_SUFFIX     = ".bin";
+	public static final String TXMTD_MV_FILE_SUFFIX      = ".impute";
+	
+	public static final String JSON_ATTRS 	= "attributes"; 
+	public static final String JSON_MTHD 	= "methods"; 
+	public static final String JSON_CONSTS = "constants"; 
+	public static final String JSON_NBINS 	= "numbins"; 		
+	protected static final String MODE_FILE_SUFFIX 		= ".mode";
+	protected static final String SCALE_FILE_SUFFIX		= ".scale";
+	protected static final String DCD_FILE_NAME 		= "dummyCodeMaps.csv";	
+	protected static final String DCD_NAME_SEP 	= "_";
 	
 	
 	private OmitAgent _oa = null;
@@ -78,7 +124,7 @@ public class TfUtils implements Serializable{
 	private String _delimString = null;
 	private String[] _NAstrings = null;
 	private String[] _outputColumnNames = null;
-	private long _numInputCols = -1;
+	private int _numInputCols = -1;
 	
 	private String _tfMtdDir = null;
 	private String _spec = null;
@@ -94,7 +140,7 @@ public class TfUtils implements Serializable{
 		}		
 		_NAstrings = TfUtils.parseNAStrings(job);
 		_spec = job.get(MRJobConfiguration.TF_SPEC);
-		_oa = new OmitAgent(new JSONObject(_spec));
+		_oa = new OmitAgent(new JSONObject(_spec), null, -1);
 	}
 	
 	// called from GenTFMtdMapper, ApplyTf (Hadoop)
@@ -129,16 +175,7 @@ public class TfUtils implements Serializable{
 		init (headerLine, hasHeader, delim, naStrings, spec, ncol, offsetFile, tmpPath, null);
 		_tfMtdDir = tfMtdDir;
 	}
-	
-	//called from cp frame transformapply
-	public TfUtils(JSONObject spec, long inNcol) 
-		throws IOException, JSONException 
-	{
-		//TODO recodemaps handover
-		_numInputCols = inNcol;
-		createAgents(spec);
-	}
-	
+
 	protected static boolean checkValidInputFile(FileSystem fs, Path path, boolean err)
 			throws IOException {
 		// check non-existing file
@@ -179,8 +216,8 @@ public class TfUtils implements Serializable{
 	/**
 	 * Prepare NA strings so that they can be sent to workers via JobConf.
 	 * A "dummy" string is added at the end to handle the case of empty strings.
-	 * @param na
-	 * @return
+	 * @param na NA string
+	 * @return NA string concatenated with NA string separator concatenated with "dummy"
 	 */
 	public static String prepNAStrings(String na) {
 		return na  + DataExpression.DELIM_NA_STRING_SEP + "dummy";
@@ -200,20 +237,14 @@ public class TfUtils implements Serializable{
 		return parseNAStrings(job.get(MRJobConfiguration.TF_NA_STRINGS));
 	}
 	
-	private void createAgents(JSONObject spec) throws IOException, JSONException {
-		_oa = new OmitAgent(spec);
-		_mia = new MVImputeAgent(spec);
-		_ra = new RecodeAgent(spec);
-		_ba = new BinAgent(spec);
-		_da = new DummycodeAgent(spec, _numInputCols);
-	}
-	
-	public void setupAgents(OmitAgent oa, MVImputeAgent mia, RecodeAgent ra, BinAgent ba, DummycodeAgent da)  {
-		_oa = oa;
-		_mia = mia;
-		_ra = ra;
-		_ba = ba;
-		_da = da;
+	private void createAgents(JSONObject spec, String[] naStrings) 
+		throws IOException, JSONException 
+	{
+		_oa = new OmitAgent(spec, _outputColumnNames, _numInputCols);
+		_mia = new MVImputeAgent(spec, null, naStrings, _numInputCols);
+		_ra = new RecodeAgent(spec, _outputColumnNames, _numInputCols);
+		_ba = new BinAgent(spec, _outputColumnNames, _numInputCols);
+		_da = new DummycodeAgent(spec, _outputColumnNames, _numInputCols);
 	}
 	
 	private void parseColumnNames() {
@@ -236,13 +267,13 @@ public class TfUtils implements Serializable{
 		_delimString = delim;
 		_delim = Pattern.compile(Pattern.quote(delim));
 		_NAstrings = naStrings;
-		_numInputCols = numCols;
+		_numInputCols = (int)numCols;
 		_offsetFile = offsetFile;
 		_tmpDir = tmpPath;
 		_outputPath = outputPath;
 		
 		parseColumnNames();		
-		createAgents(spec);
+		createAgents(spec, naStrings);
 	}
 	
 	public void incrValid() { _numValidRecords++; }
@@ -279,46 +310,45 @@ public class TfUtils implements Serializable{
 	/**
 	 * Function that checks if the given string is one of NA strings.
 	 * 
-	 * @param w
-	 * @return
+	 * @param NAstrings array of NA strings
+	 * @param w string to check
+	 * @return true if w is a NAstring
 	 */
-	public boolean isNA(String w) {
-		if(_NAstrings == null)
+	public static boolean isNA(String[] NAstrings, String w) {
+		if(NAstrings == null)
 			return false;
 		
-		for(String na : _NAstrings) {
+		for(String na : NAstrings) {
 			if(w.equals(na))
 				return true;
 		}
 		return false;
 	}
 	
-	public String[] getWords(Text line)
-	{
+	public String[] getWords(Text line) {
 		return getWords(line.toString());
 	}
 	
 
-	public String[] getWords(String line) 
-	{
+	public String[] getWords(String line) {
 		return getDelim().split(line.trim(), -1);
 	}
 	
 	/**
 	 * Process a given row to construct transformation metadata.
 	 * 
-	 * @param line
-	 * @return
-	 * @throws IOException
+	 * @param line string to break into words
+	 * @return string array of words from the line
+	 * @throws IOException if IOException occurs
 	 */
 	public String[] prepareTfMtd(String line) throws IOException {
 		String[] words = getWords(line);
 		if(!getOmitAgent().omit(words, this))
 		{
-			getMVImputeAgent().prepare(words, this);
+			getMVImputeAgent().prepare(words);
 			getRecodeAgent().prepare(words, this);
 			getBinAgent().prepare(words, this);
-			incrValid();;
+			incrValid();
 		}
 		incrTotal();
 		
@@ -354,30 +384,10 @@ public class TfUtils implements Serializable{
 		// associate recode maps and bin definitions with dummycoding agent,
 		// as recoded and binned columns are typically dummycoded
 		getDummycodeAgent().setRecodeMaps( getRecodeAgent().getRecodeMaps() );
-		getDummycodeAgent().setNumBins(getBinAgent().getBinList(), getBinAgent().getNumBins());
+		getDummycodeAgent().setNumBins(getBinAgent().getColList(), getBinAgent().getNumBins());
 		getDummycodeAgent().loadTxMtd(job, fs, tfMtdDir, this);
 
 	}
-	
-	/*public void loadTfMetadata () throws IOException
-	{
-		Path tfMtdDir = (DistributedCache.getLocalCacheFiles(_rJob))[0];
-		FileSystem localFS = FileSystem.getLocal(_rJob);
-		
-		loadTfMetadata(_rJob, localFS, tfMtdDir);
-		
-		FileSystem fs;
-		fs = FileSystem.get(_rJob);
-		Path thisPath=new Path(_rJob.get(MRConfigurationNames.MR_MAP_INPUT_FILE)).makeQualified(fs);
-		String thisfile=thisPath.toString();
-			
-		Path smallestFilePath=new Path(_rJob.get(MRJobConfiguration.TF_SMALLEST_FILE)).makeQualified(fs);
-		if(thisfile.toString().equals(smallestFilePath.toString()))
-			_partFileWithHeader=true;
-		else
-			_partFileWithHeader = false;
-	}*/
-
 
 	public String processHeaderLine() throws IOException 
 	{
@@ -402,30 +412,17 @@ public class TfUtils implements Serializable{
 		return getOmitAgent().omit(words, this);
 	}
 	
-	
-	public String[] apply(String[] words) {
-		return apply(words, false);
-	}
-	
 	/**
 	 * Function to apply transformation metadata on a given row.
 	 * 
-	 * @param words
-	 * @param optimizeMaps
-	 * @return
+	 * @param words string array of words
+	 * @return string array of transformed words
 	 */
-	public String[] apply ( String[] words, boolean optimizeMaps ) 
-	{
-		words = getMVImputeAgent().apply(words, this);
-		
-		if(optimizeMaps)
-			// specific case of transform() invoked from CP (to save boxing and unboxing)
-			words = getRecodeAgent().cp_apply(words, this);
-		else
-			words = getRecodeAgent().apply(words, this);
-
-		words = getBinAgent().apply(words, this);
-		words = getDummycodeAgent().apply(words, this);		
+	public String[] apply( String[] words ) {
+		words = getMVImputeAgent().apply(words);
+		words = getRecodeAgent().apply(words);
+		words = getBinAgent().apply(words);
+		words = getDummycodeAgent().apply(words);		
 		_numTransformedRows++;
 		
 		return words;
@@ -443,8 +440,7 @@ public class TfUtils implements Serializable{
 		}
 	}
 	
-	public String checkAndPrepOutputString(String []words) throws DMLRuntimeException 
-	{
+	public String checkAndPrepOutputString(String []words) throws DMLRuntimeException {
 		return checkAndPrepOutputString(words, new StringBuilder());
 	}
 	
@@ -522,22 +518,29 @@ public class TfUtils implements Serializable{
 	 * counters/offsets file, which was generated from either GenTfMtdMR
 	 * or AssignRowIDMR job.
 	 * 
+	 * @param job job configuration
+	 * @param offset file offset
+	 * @return part file id (ie, 00001, 00002, etc)
+	 * @throws IOException if IOException occurs
 	 */
 	public String getPartFileID(JobConf job, long offset) throws IOException
 	{
-		Reader reader = initOffsetsReader(job);
-		
-		ByteWritable key=new ByteWritable();
-		OffsetCount value=new OffsetCount();
-		String thisFile = TfUtils.getPartFileName(job);
-		
+		Reader reader = null;
 		int id = 0;
-		while (reader.next(key, value)) {
-			if ( thisFile.equals(value.filename) && value.fileOffset == offset ) 
-				break;
-			id++;
+		try {
+			reader = initOffsetsReader(job);
+			ByteWritable key=new ByteWritable();
+			OffsetCount value=new OffsetCount();
+			String thisFile = TfUtils.getPartFileName(job);
+			while (reader.next(key, value)) {
+				if ( thisFile.equals(value.filename) && value.fileOffset == offset ) 
+					break;
+				id++;
+			}
 		}
-		reader.close();
+		finally {
+			IOUtilFunctions.closeSilently(reader);
+		}
 		
 		String sid = Integer.toString(id);
 		char[] carr = new char[5-sid.length()];

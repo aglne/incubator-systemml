@@ -23,14 +23,18 @@ import java.io.BufferedReader;
 import java.io.FileReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
-import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.logging.Log;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.sysml.conf.ConfigurationManager;
+import org.apache.sysml.parser.common.CommonSyntacticValidator;
+import org.apache.sysml.parser.common.CustomErrorListener.ParseIssue;
 import org.apache.sysml.parser.dml.DMLParserWrapper;
 import org.apache.sysml.parser.pydml.PyDMLParserWrapper;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.util.LocalFileUtils;
 
 /**
@@ -39,24 +43,19 @@ import org.apache.sysml.runtime.util.LocalFileUtils;
  */
 public abstract class AParserWrapper 
 {
-	/**
-	 * 
-	 * @param fileName
-	 * @param dmlScript
-	 * @param argVals
-	 * @return
-	 * @throws ParseException
-	 */
-	public abstract DMLProgram parse(String fileName, String dmlScript, HashMap<String, String> argVals) 
+	protected boolean atLeastOneError = false;
+	protected boolean atLeastOneWarning = false;
+	protected List<ParseIssue> parseIssues;
+	
+	public abstract DMLProgram parse(String fileName, String dmlScript, Map<String, String> argVals)
 		throws ParseException;
 
 	
 	/**
-	 * Factory method for creating instances of AParserWrapper, for
-	 * simplificy fused with the abstract class.
+	 * Factory method for creating parser wrappers
 	 * 
 	 * @param pydml true if a PyDML parser is needed
-	 * @return
+	 * @return parser wrapper
 	 */
 	public static AParserWrapper createParser(boolean pydml)
 	{
@@ -67,6 +66,8 @@ public abstract class AParserWrapper
 			ret = new PyDMLParserWrapper();
 		else
 			ret = new DMLParserWrapper();
+		
+		CommonSyntacticValidator.init();
 		
 		return ret;
 	}
@@ -147,14 +148,24 @@ public abstract class AParserWrapper
 			LOG.error("Failed to read the script from the file system", ex);
 			throw ex;
 		}
-		finally 
-		{
-			if( in != null )
-				in.close();
+		finally {
+			IOUtilFunctions.closeSilently(in);
 		}
 		
 		dmlScriptStr = sb.toString();
 		
 		return dmlScriptStr;
+	}
+	
+	public boolean isAtLeastOneError() {
+		return atLeastOneError;
+	}
+
+	public boolean isAtLeastOneWarning() {
+		return atLeastOneWarning;
+	}
+
+	public List<ParseIssue> getParseIssues() {
+		return parseIssues;
 	}
 }

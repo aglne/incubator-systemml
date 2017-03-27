@@ -22,6 +22,7 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Iterator;
+import java.util.List;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -40,8 +41,10 @@ import org.apache.wink.json4j.JSONObject;
 import scala.Tuple2;
 
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.matrix.CSVReblockMR.OffsetCount;
 import org.apache.sysml.runtime.matrix.data.CSVFileFormatProperties;
+import org.apache.sysml.runtime.matrix.data.Pair;
 
 public class GenTfMtdSPARK 
 {
@@ -49,6 +52,20 @@ public class GenTfMtdSPARK
 	 * Spark code to Generate Transform Metadata based on the given transformation
 	 * specification file (JSON format).
 	 * 
+	 * @param sec spark execution context
+	 * @param inputRDD input rdd
+	 * @param tfMtdPath transform metadata path
+	 * @param spec JSON transform specification
+	 * @param partOffsetsFile ?
+	 * @param prop csv file format properties
+	 * @param numCols number of columns
+	 * @param headerLine header line
+	 * @return number of rows
+	 * @throws IOException if IOException occurs
+	 * @throws ClassNotFoundException if ClassNotFoundException occurs
+	 * @throws InterruptedException if InterruptedException occurs
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws JSONException if JSONException occurs
 	 */
 	public static long runSparkJob(SparkExecutionContext sec, JavaRDD<Tuple2<LongWritable, Text>> inputRDD, 
 									String tfMtdPath, String spec, String partOffsetsFile, 
@@ -129,17 +146,17 @@ public class GenTfMtdSPARK
 			
 			// Prepare the output in the form of DistinctValues, which subsequently need to be grouped and aggregated. 
 			
-			ArrayList<Tuple2<Integer,DistinctValue>> outList = new ArrayList<Tuple2<Integer,DistinctValue>>();
+			ArrayList<Pair<Integer,DistinctValue>> outList = new ArrayList<Pair<Integer,DistinctValue>>();
 			
 			_agents.getMVImputeAgent().mapOutputTransformationMetadata(partitionID, outList, _agents);
 			_agents.getRecodeAgent().mapOutputTransformationMetadata(partitionID, outList, _agents);
 			_agents.getBinAgent().mapOutputTransformationMetadata(partitionID, outList, _agents);
 			
 			DistinctValue dv = new DistinctValue(new OffsetCount("Partition"+partitionID, _offsetInPartFile, _agents.getTotal()));
-			Tuple2<Integer, DistinctValue> tuple = new Tuple2<Integer, DistinctValue>((int) (_agents.getNumCols()+1), dv); 
+			Pair<Integer, DistinctValue> tuple = new Pair<Integer, DistinctValue>((int) (_agents.getNumCols()+1), dv); 
 			outList.add(tuple);
 
-			return outList.iterator();
+			return toTuple2List(outList).iterator();
 		}
 		
 	}
@@ -157,9 +174,9 @@ public class GenTfMtdSPARK
 			_agents = new TfUtils(headerLine, hasHeader, delim, nas, jspec, numCols, tfMtdDir, offsetFile, null);
 		}
 
-		@SuppressWarnings("unchecked")
+		@SuppressWarnings({"unchecked","deprecation"})
 		@Override
-		public Iterable<Long> call(Tuple2<Integer, Iterable<DistinctValue>> t)
+		public Iterator<Long> call(Tuple2<Integer, Iterable<DistinctValue>> t)
 				throws Exception {
 			
 			int colID = t._1();
@@ -185,18 +202,20 @@ public class GenTfMtdSPARK
 					list.add(new OffsetCount(iterDV.next().getOffsetCount()));
 				Collections.sort(list);
 				
-				@SuppressWarnings("deprecation")
-				SequenceFile.Writer writer = new SequenceFile.Writer(fs, job, new Path(_agents.getOffsetFile()+"/part-00000"), ByteWritable.class, OffsetCount.class);
-				
+				SequenceFile.Writer writer = null;
 				long lineOffset=0;
-				for(OffsetCount oc: list)
-				{
-					long count=oc.count;
-					oc.count=lineOffset;
-					writer.append(new ByteWritable((byte)0), oc);
-					lineOffset+=count;
+				try {
+					writer = new SequenceFile.Writer(fs, job, new Path(_agents.getOffsetFile()+"/part-00000"), ByteWritable.class, OffsetCount.class);
+					for(OffsetCount oc: list) {
+						long count=oc.count;
+						oc.count=lineOffset;
+						writer.append(new ByteWritable((byte)0), oc);
+						lineOffset+=count;
+					}
 				}
-				writer.close();
+				finally {
+					IOUtilFunctions.closeSilently(writer);
+				}
 				list.clear();
 				
 				numRows.add(lineOffset);
@@ -208,7 +227,14 @@ public class GenTfMtdSPARK
 				numRows.add(0L);
 			}
 			
-			return numRows;
+			return numRows.iterator();
 		}
+	}
+
+	public static List<Tuple2<Integer,DistinctValue>> toTuple2List(List<Pair<Integer,DistinctValue>> in) {
+		ArrayList<Tuple2<Integer,DistinctValue>> ret = new ArrayList<Tuple2<Integer,DistinctValue>>();
+		for( Pair<Integer,DistinctValue> e : in )
+			ret.add(new Tuple2<Integer,DistinctValue>(e.getKey(), e.getValue()));
+		return ret;
 	}
 }

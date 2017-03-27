@@ -21,7 +21,9 @@ package org.apache.sysml.hops;
 
 import java.util.ArrayList;
 
+import org.apache.sysml.api.DMLScript;
 import org.apache.sysml.conf.ConfigurationManager;
+import org.apache.sysml.hops.Hop.MultiThreadedHop;
 import org.apache.sysml.hops.rewrite.HopRewriteUtils;
 import org.apache.sysml.lops.Aggregate;
 import org.apache.sysml.lops.Group;
@@ -30,6 +32,7 @@ import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.lops.SortKeys;
 import org.apache.sysml.lops.Transform;
 import org.apache.sysml.lops.LopProperties.ExecType;
+import org.apache.sysml.lops.Transform.OperationTypes;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
@@ -47,7 +50,7 @@ import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
  *  and (2) most importantly semantic of reshape is exactly a reorg op. 
  */
 
-public class ReorgOp extends Hop 
+public class ReorgOp extends Hop implements MultiThreadedHop
 {
 	
 	public static boolean FORCE_DIST_SORT_INDEXES = false;
@@ -55,7 +58,8 @@ public class ReorgOp extends Hop
 	public boolean bSortSPRewriteApplicable = false;
 	
 	private ReOrgOp op;
-
+	private int _maxNumThreads = -1; //-1 for unlimited
+	
 	private ReorgOp() {
 		//default constructor for clone
 	}
@@ -86,6 +90,16 @@ public class ReorgOp extends Hop
 		refreshSizeInformation();
 	}
 
+	@Override
+	public void setMaxNumThreads( int k ) {
+		_maxNumThreads = k;
+	}
+	
+	@Override
+	public int getMaxNumThreads() {
+		return _maxNumThreads;
+	}
+	
 	public ReOrgOp getOp()
 	{
 		return op;
@@ -111,6 +125,25 @@ public class ReorgOp extends Hop
 		switch( op )
 		{
 			case TRANSPOSE:
+			{
+				Lop lin = getInput().get(0).constructLops();
+				if( lin instanceof Transform && ((Transform)lin).getOperationType()==OperationTypes.Transpose )
+					setLops(lin.getInputs().get(0)); //if input is already a transpose, avoid redundant transpose ops
+				else if( getDim1()==1 && getDim2()==1 )
+					setLops(lin); //if input of size 1x1, avoid unnecessary transpose
+				else { //general case
+					int k = OptimizerUtils.getConstrainedNumThreads(_maxNumThreads);
+					if(DMLScript.USE_ACCELERATOR && (DMLScript.FORCE_ACCELERATOR || getMemEstimate() < OptimizerUtils.GPU_MEMORY_BUDGET)) {
+						et = ExecType.GPU;
+					}
+					Transform transform1 = new Transform( lin, 
+							HopsTransf2Lops.get(op), getDataType(), getValueType(), et, k);
+					setOutputDimensions(transform1);
+					setLineNumbers(transform1);
+					setLops(transform1);
+				}
+				break;
+			}
 			case DIAG:
 			{
 				Transform transform1 = new Transform( getInput().get(0).constructLops(), 
@@ -223,7 +256,7 @@ public class ReorgOp extends Hop
 						vinput = new IndexingOp("tmp1", getDataType(), getValueType(), input, new LiteralOp(1L), 
 								HopRewriteUtils.createValueHop(input, true), by, by, false, true);
 						vinput.refreshSizeInformation();
-						HopRewriteUtils.setOutputBlocksizes(vinput, getRowsInBlock(), getColsInBlock());
+						vinput.setOutputBlocksizes(getRowsInBlock(), getColsInBlock());
 						HopRewriteUtils.copyLineNumbers(this, vinput);	
 					}
 					
@@ -281,7 +314,7 @@ public class ReorgOp extends Hop
 						
 						//generate table
 						TernaryOp table = new TernaryOp("tmp5", DataType.MATRIX, ValueType.DOUBLE, OpOp3.CTABLE, seq, voutput, new LiteralOp(1L) );
-						HopRewriteUtils.setOutputBlocksizes(table, getRowsInBlock(), getColsInBlock());
+						table.setOutputBlocksizes(getRowsInBlock(), getColsInBlock());
 						table.refreshSizeInformation();
 						table.setForcedExecType(ExecType.MR); //force MR 
 						HopRewriteUtils.copyLineNumbers(this, table);
@@ -591,6 +624,7 @@ public class ReorgOp extends Hop
 		
 		//copy specific attributes
 		ret.op = op;
+		ret._maxNumThreads = _maxNumThreads;
 		
 		return ret;
 	}
@@ -603,6 +637,7 @@ public class ReorgOp extends Hop
 		
 		ReorgOp that2 = (ReorgOp)that;		
 		boolean ret =  (op == that2.op)
+				    && (_maxNumThreads == that2._maxNumThreads)
 				    && (getInput().size()==that.getInput().size());
 				
 		//compare all childs (see reshape, sort)
@@ -612,26 +647,10 @@ public class ReorgOp extends Hop
 		
 		return ret;
 	}
-	
-	
-	@Override
-	public void printMe() throws HopsException 
-	{
-		if (LOG.isDebugEnabled()){
-			if (getVisited() != VisitStatus.DONE) {
-				super.printMe();
-				LOG.debug("  Operation: " + op);
-				for (Hop h : getInput()) {
-					h.printMe();
-				}
-			}
-			setVisited(VisitStatus.DONE);
-		}
-	}
 
 	/**
 	 * This will check if there is sufficient memory locally (twice the size of second matrix, for original and sort data), and remotely (size of second matrix (sorted data)).  
-	 * @return
+	 * @return true if sufficient memory locally
 	 */
 	private boolean isSortSPRewriteApplicable() 
 	{

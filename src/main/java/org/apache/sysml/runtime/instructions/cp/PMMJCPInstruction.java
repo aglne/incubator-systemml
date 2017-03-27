@@ -20,16 +20,11 @@
 package org.apache.sysml.runtime.instructions.cp;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 
-/**
- * 
- * 
- */
 public class PMMJCPInstruction extends ComputationCPInstruction
 {	
 	
@@ -40,13 +35,7 @@ public class PMMJCPInstruction extends ComputationCPInstruction
 		super(op, in1, in2, in3, out, opcode, istr);
 		_numThreads = k;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static PMMJCPInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -68,7 +57,7 @@ public class PMMJCPInstruction extends ComputationCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		//get inputs
 		MatrixBlock matBlock1 = ec.getMatrixInput(input1.getName());

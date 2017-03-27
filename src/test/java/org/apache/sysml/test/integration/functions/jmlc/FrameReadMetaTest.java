@@ -20,16 +20,24 @@
 package org.apache.sysml.test.integration.functions.jmlc;
 
 import java.io.IOException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 
 import org.junit.Assert;
 import org.junit.Test;
+import org.apache.commons.lang.ArrayUtils;
 import org.apache.sysml.api.jmlc.Connection;
 import org.apache.sysml.api.jmlc.PreparedScript;
 import org.apache.sysml.api.jmlc.ResultVariables;
 import org.apache.sysml.lops.Lop;
+import org.apache.sysml.runtime.DMLRuntimeException;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
+import org.apache.sysml.runtime.transform.TfUtils;
+import org.apache.sysml.runtime.transform.meta.TfMetaUtils;
+import org.apache.sysml.runtime.util.DataConverter;
 import org.apache.sysml.runtime.util.MapReduceTool;
 import org.apache.sysml.test.integration.AutomatedTestBase;
 import org.apache.sysml.test.integration.TestConfiguration;
@@ -53,13 +61,33 @@ public class FrameReadMetaTest extends AutomatedTestBase
 	}
 	
 	@Test
+	public void testJMLCTransformDenseSpec() throws IOException {
+		runJMLCReadMetaTest(TEST_NAME1, false, false, true);
+	}
+	
+	@Test
+	public void testJMLCTransformDenseReuseSpec() throws IOException {
+		runJMLCReadMetaTest(TEST_NAME1, true, false, true);
+	}
+	
+	@Test
 	public void testJMLCTransformDense() throws IOException {
-		runJMLCReadMetaTest(TEST_NAME1, false);
+		runJMLCReadMetaTest(TEST_NAME1, false, false, false);
 	}
 	
 	@Test
 	public void testJMLCTransformDenseReuse() throws IOException {
-		runJMLCReadMetaTest(TEST_NAME1, true);
+		runJMLCReadMetaTest(TEST_NAME1, true, false, false);
+	}
+	
+	@Test
+	public void testJMLCTransformDenseReadFrame() throws IOException {
+		runJMLCReadMetaTest(TEST_NAME1, false, true, false);
+	}
+	
+	@Test
+	public void testJMLCTransformDenseReuseReadFrame() throws IOException {
+		runJMLCReadMetaTest(TEST_NAME1, true, true, false);
 	}
 
 	/**
@@ -69,7 +97,7 @@ public class FrameReadMetaTest extends AutomatedTestBase
 	 * @param instType
 	 * @throws IOException 
 	 */
-	private void runJMLCReadMetaTest( String testname, boolean modelReuse ) 
+	private void runJMLCReadMetaTest( String testname, boolean modelReuse, boolean readFrame, boolean useSpec ) 
 		throws IOException
 	{	
 		String TEST_NAME = testname;
@@ -80,17 +108,19 @@ public class FrameReadMetaTest extends AutomatedTestBase
 		//establish connection to SystemML
 		Connection conn = new Connection();
 		
-		//read meta data frame
-		String spec = MapReduceTool.readStringFromHDFSFile(SCRIPT_DIR + TEST_DIR+"tfmtd_example/spec.json");
-		FrameBlock M = conn.readTransformMetaData(spec, SCRIPT_DIR + TEST_DIR+"tfmtd_example/");
-		
-		//generate data based on recode maps
-		HashMap<String,Long>[] RC = getRecodeMaps(M);
-		double[][] X = generateData(rows, cols, RC);
-		String[][] F = null;
+		//read meta data frame 
+		String spec = MapReduceTool.readStringFromHDFSFile(SCRIPT_DIR + TEST_DIR+"tfmtd_example2/spec.json");
+		FrameBlock M = readFrame ?
+				DataConverter.convertToFrameBlock(conn.readStringFrame(SCRIPT_DIR + TEST_DIR+"tfmtd_frame_example/tfmtd_frame")) : 
+				conn.readTransformMetaDataFromFile(spec, SCRIPT_DIR + TEST_DIR+"tfmtd_example2/");
 		
 		try
 		{
+			//generate data based on recode maps
+			HashMap<String,Long>[] RC = getRecodeMaps(spec, M);
+			double[][] X = generateData(rows, cols, RC);
+			String[][] F = null;
+			
 			//prepare input arguments
 			HashMap<String,String> args = new HashMap<String,String>();
 			args.put("$TRANSFORM_SPEC", spec);
@@ -116,44 +146,49 @@ public class FrameReadMetaTest extends AutomatedTestBase
 				//get output parameter
 				F = rs.getFrame("F");
 			}
+			
+
+			//check correct result 
+			//for all generated data, probe recode maps and compare versus output
+			for( int i=0; i<rows; i++ ) 
+				for( int j=0; j<cols; j++ ) 
+					if( RC[j] != null ) {
+						Assert.assertEquals("Wrong result: "+F[i][j]+".", 
+								Double.valueOf(X[i][j]), 
+								Double.valueOf(RC[j].get(F[i][j]).toString()));
+					}	
 		}
 		catch(Exception ex) {
 			ex.printStackTrace();
 			throw new IOException(ex);
 		}
-		finally
-		{
-			if( conn != null )
-				conn.close();
+		finally {
+			IOUtilFunctions.closeSilently(conn);
 		}
-		
-		//check correct result 
-		//for all generated data, probe recode maps and compare versus output
-		for( int i=0; i<rows; i++ ) 
-			for( int j=0; j<cols; j++ ) 
-				if( RC[j] != null ) {
-					Assert.assertEquals("Wrong result: "+F[i][j]+".", 
-							Double.valueOf(X[i][j]), 
-							Double.valueOf(RC[j].get(F[i][j]).toString()));
-				}	
 	}
 
 	/**
 	 * 
 	 * @param M
 	 * @return
+	 * @throws DMLRuntimeException 
 	 */
 	@SuppressWarnings("unchecked")
-	private HashMap<String,Long>[] getRecodeMaps(FrameBlock M) {
+	private HashMap<String,Long>[] getRecodeMaps(String spec, FrameBlock M) 
+		throws DMLRuntimeException 
+	{
+		List<Integer> collist = Arrays.asList(ArrayUtils.toObject(
+				TfMetaUtils.parseJsonIDList(spec, M.getColumnNames(), TfUtils.TXMETHOD_RECODE)));
 		HashMap<String,Long>[] ret = new HashMap[M.getNumColumns()];
 		Iterator<Object[]> iter = M.getObjectRowIterator();
 		while( iter.hasNext() ) {
 			Object[] tmp = iter.next();
 			for( int j=0; j<tmp.length; j++ ) 
-				if( tmp[j] != null ) {
+				if( collist.contains(j+1) && tmp[j] != null ) {
 					if( ret[j] == null )
 						ret[j] = new HashMap<String,Long>();
-					String[] parts = tmp[j].toString().split(Lop.DATATYPE_PREFIX);
+					String[] parts = IOUtilFunctions.splitCSV(
+							tmp[j].toString(), Lop.DATATYPE_PREFIX);
 					ret[j].put(parts[0], Long.parseLong(parts[1]));
 				}
 		}

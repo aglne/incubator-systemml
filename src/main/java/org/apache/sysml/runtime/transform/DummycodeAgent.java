@@ -23,10 +23,15 @@ import java.io.BufferedWriter;
 import java.io.File;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
+import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.fs.FileSystem;
@@ -34,22 +39,18 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.OutputCollector;
-import org.apache.wink.json4j.JSONArray;
+import org.apache.sysml.runtime.matrix.data.FrameBlock;
+import org.apache.sysml.runtime.matrix.data.MatrixBlock;
+import org.apache.sysml.runtime.transform.encode.Encoder;
+import org.apache.sysml.runtime.transform.meta.TfMetaUtils;
+import org.apache.sysml.runtime.util.UtilFunctions;
 import org.apache.wink.json4j.JSONException;
 import org.apache.wink.json4j.JSONObject;
 
-import com.google.common.base.Functions;
-import com.google.common.collect.Ordering;
-
-import org.apache.sysml.runtime.util.UtilFunctions;
-
-public class DummycodeAgent extends TransformationAgent {	
-	
+public class DummycodeAgent extends Encoder 
+{		
 	private static final long serialVersionUID = 5832130477659116489L;
 
-	private int[] _dcdList = null;
-	private long numCols = 0;
-	
 	private HashMap<Integer, HashMap<String,String>> _finalMaps = null;
 	private HashMap<Integer, HashMap<String,Long>> _finalMapsCP = null;
 	private int[] _binList = null;
@@ -58,36 +59,24 @@ public class DummycodeAgent extends TransformationAgent {
 	private int[] _domainSizes = null;			// length = #of dummycoded columns
 	private int[] _dcdColumnMap = null;			// to help in translating between original and dummycoded column IDs
 	private long _dummycodedLength = 0;			// #of columns after dummycoded
-	
-	DummycodeAgent(int[] list) {
-		_dcdList = list;
+
+	public DummycodeAgent(JSONObject parsedSpec, String[] colnames, int clen) throws JSONException {
+		super(null, clen);
+		
+		if ( parsedSpec.containsKey(TfUtils.TXMETHOD_DUMMYCODE) ) {
+			int[] collist = TfMetaUtils.parseJsonIDList(parsedSpec, colnames, TfUtils.TXMETHOD_DUMMYCODE);
+			initColList(collist);
+		}
 	}
 	
-	DummycodeAgent(JSONObject parsedSpec, long ncol) throws JSONException {
-		numCols = ncol;
-		
-		if ( !parsedSpec.containsKey(TX_METHOD.DUMMYCODE.toString()) )
-			return;
-		
-		JSONObject obj = (JSONObject) parsedSpec.get(TX_METHOD.DUMMYCODE.toString());
-		JSONArray attrs = (JSONArray) obj.get(JSON_ATTRS);
-			
-		_dcdList = new int[attrs.size()];
-		for(int i=0; i < _dcdList.length; i++) 
-			_dcdList[i] = UtilFunctions.toInt(attrs.get(i));
-	}
-	
-	public int[] dcdList() {
-		return _dcdList;
+	@Override
+	public int getNumCols() {
+		return (int)_dummycodedLength;
 	}
 	
 	/**
 	 * Method to output transformation metadata from the mappers. 
 	 * This information is collected and merged by the reducers.
-	 * 
-	 * @param out
-	 * @throws IOException
-	 * 
 	 */
 	@Override
 	public void mapOutputTransformationMetadata(OutputCollector<IntWritable, DistinctValue> out, int taskID, TfUtils agents) throws IOException {
@@ -126,65 +115,62 @@ public class DummycodeAgent extends TransformationAgent {
 	 * Recoded columns are of type nominal, binner columns are of type ordinal, dummycoded columns are of type 
 	 * dummycoded, and the remaining are of type scale.
 	 * 
-	 * @param fs
-	 * @param txMtdDir
-	 * @param numCols
-	 * @param ra
-	 * @param ba
-	 * @return Number of columns in the transformed data
-	 * @throws IOException
+	 * @param fs file system
+	 * @param txMtdDir path to transform metadata directory
+	 * @param numCols number of columns
+	 * @param agents ?
+	 * @return ?
+	 * @throws IOException if IOException occurs
 	 */
 	public int genDcdMapsAndColTypes(FileSystem fs, String txMtdDir, int numCols, TfUtils agents) throws IOException {
 		
 		// initialize all column types in the transformed data to SCALE
-		ColumnTypes[] ctypes = new ColumnTypes[(int) _dummycodedLength];
+		TfUtils.ColumnTypes[] ctypes = new TfUtils.ColumnTypes[(int) _dummycodedLength];
 		for(int i=0; i < _dummycodedLength; i++)
-			ctypes[i] = ColumnTypes.SCALE;
+			ctypes[i] = TfUtils.ColumnTypes.SCALE;
 		
 		_dcdColumnMap = new int[numCols];
 
-		Path pt=new Path(txMtdDir+"/Dummycode/" + DCD_FILE_NAME);
-		BufferedWriter br=new BufferedWriter(new OutputStreamWriter(fs.create(pt,true)));
-		
 		int sum=1;
-		int idx = 0;
-		for(int colID=1; colID <= numCols; colID++) 
-		{
-			if ( _dcdList != null && idx < _dcdList.length && _dcdList[idx] == colID )
+		try( BufferedWriter br=new BufferedWriter(new OutputStreamWriter(
+				fs.create(new Path(txMtdDir+"/Dummycode/" + TfUtils.DCD_FILE_NAME),true))) ) {
+			int idx = 0;
+			for(int colID=1; colID <= numCols; colID++) 
 			{
-				br.write(colID + TfUtils.TXMTD_SEP + "1" + TfUtils.TXMTD_SEP + sum + TfUtils.TXMTD_SEP + (sum+_domainSizes[idx]-1) + "\n");
-				_dcdColumnMap[colID-1] = (sum+_domainSizes[idx]-1)-1;
-
-				for(int i=sum; i <=(sum+_domainSizes[idx]-1); i++)
-					ctypes[i-1] = ColumnTypes.DUMMYCODED;
-				
-				sum += _domainSizes[idx];
-				idx++;
-			}
-			else 
-			{
-				br.write(colID + TfUtils.TXMTD_SEP + "0" + TfUtils.TXMTD_SEP + sum + TfUtils.TXMTD_SEP + sum + "\n");
-				_dcdColumnMap[colID-1] = sum-1;
-				
-				if ( agents.getBinAgent().isBinned(colID) != -1 )
-					ctypes[sum-1] = ColumnTypes.ORDINAL;	// binned variable results in an ordinal column
-				
-				if ( agents.getRecodeAgent().isRecoded(colID) != -1 )
-					ctypes[sum-1] = ColumnTypes.NOMINAL;
-				
-				sum += 1;
+				if ( _colList != null && idx < _colList.length && _colList[idx] == colID )
+				{
+					br.write(colID + TfUtils.TXMTD_SEP + "1" + TfUtils.TXMTD_SEP + sum + TfUtils.TXMTD_SEP + (sum+_domainSizes[idx]-1) + "\n");
+					_dcdColumnMap[colID-1] = (sum+_domainSizes[idx]-1)-1;
+	
+					for(int i=sum; i <=(sum+_domainSizes[idx]-1); i++)
+						ctypes[i-1] = TfUtils.ColumnTypes.DUMMYCODED;
+					
+					sum += _domainSizes[idx];
+					idx++;
+				}
+				else 
+				{
+					br.write(colID + TfUtils.TXMTD_SEP + "0" + TfUtils.TXMTD_SEP + sum + TfUtils.TXMTD_SEP + sum + "\n");
+					_dcdColumnMap[colID-1] = sum-1;
+					
+					if ( agents.getBinAgent().isApplicable(colID) != -1 )
+						ctypes[sum-1] = TfUtils.ColumnTypes.ORDINAL;	// binned variable results in an ordinal column
+					
+					if ( agents.getRecodeAgent().isApplicable(colID) != -1 )
+						ctypes[sum-1] = TfUtils.ColumnTypes.NOMINAL;
+					
+					sum += 1;
+				}
 			}
 		}
-		br.close();
 
 		// Write coltypes.csv
-		pt=new Path(txMtdDir + File.separator + TfUtils.TXMTD_COLTYPES);
-		br=new BufferedWriter(new OutputStreamWriter(fs.create(pt,true)));
-		
-		br.write(columnTypeToID(ctypes[0]) + "");
-		for(int i = 1; i < _dummycodedLength; i++) 
-			br.write( TfUtils.TXMTD_SEP + columnTypeToID(ctypes[i]));
-		br.close();
+		try(BufferedWriter br=new BufferedWriter(new OutputStreamWriter(
+				fs.create(new Path(txMtdDir + File.separator + TfUtils.TXMTD_COLTYPES),true))) ) {
+			br.write(ctypes[0].toID() + "");
+			for(int i = 1; i < _dummycodedLength; i++) 
+				br.write( TfUtils.TXMTD_SEP + ctypes[i].toID() );
+		}
 		
 		return sum-1;
 	}
@@ -192,8 +178,8 @@ public class DummycodeAgent extends TransformationAgent {
 	/**
 	 * Given a dummycoded column id, find the corresponding original column ID.
 	 *  
-	 * @param colID
-	 * @return
+	 * @param colID dummycoded column ID
+	 * @return original column ID, -1 if not found
 	 */
 	public int mapDcdColumnID(int colID) 
 	{
@@ -211,7 +197,7 @@ public class DummycodeAgent extends TransformationAgent {
 	
 	public String constructDummycodedHeader(String header, Pattern delim) {
 		
-		if(_dcdList == null && _binList == null )
+		if(_colList == null && _binList == null )
 			// none of the columns are dummycoded, simply return the given header
 			return header;
 		
@@ -223,58 +209,78 @@ public class DummycodeAgent extends TransformationAgent {
 		// Dummycoding can be performed on either on a recoded column or on a binned column
 		
 		// process recoded columns
-		if(_finalMapsCP != null && _dcdList != null) 
+		if(_finalMapsCP != null && _colList != null) 
 		{
-			for(int i=0; i <_dcdList.length; i++) 
+			for(int i=0; i <_colList.length; i++) 
 			{
-				int colID = _dcdList[i];
+				int colID = _colList[i];
 				HashMap<String,Long> map = _finalMapsCP.get(colID);
 				String colName = UtilFunctions.unquote(names[colID-1]);
 				
 				if ( map != null  ) 
 				{
 					// order map entries by their recodeID
-					Ordering<String> valueComparator = Ordering.natural().onResultOf(Functions.forMap(map));
-					newNames = valueComparator.sortedCopy(map.keySet());
+					List<Map.Entry<String, Long>> entryList = new ArrayList<Map.Entry<String, Long>>(map.entrySet());
+					Comparator<Map.Entry<String, Long>> comp = new Comparator<Map.Entry<String, Long>>() {
+						@Override
+						public int compare(Entry<String, Long> entry1, Entry<String, Long> entry2) {
+							Long value1 = entry1.getValue();
+							Long value2 = entry2.getValue();
+							return (int) (value1 - value2);
+						}
+					};
+					Collections.sort(entryList, comp);
+					newNames = new ArrayList<String>();
+					for (Entry<String, Long> entry : entryList) {
+						newNames.add(entry.getKey());
+					}
 					
 					// construct concatenated string of map entries
 					sb.setLength(0);
 					for(int idx=0; idx < newNames.size(); idx++) 
 					{
 						if(idx==0) 
-							sb.append( colName + DCD_NAME_SEP + newNames.get(idx));
+							sb.append( colName + TfUtils.DCD_NAME_SEP + newNames.get(idx));
 						else
-							sb.append( delim + colName + DCD_NAME_SEP + newNames.get(idx));
+							sb.append( delim + colName + TfUtils.DCD_NAME_SEP + newNames.get(idx));
 					}
 					names[colID-1] = sb.toString();			// replace original column name with dcd name
 				}
 			}
 		}
-		else if(_finalMaps != null && _dcdList != null) {
-			for(int i=0; i <_dcdList.length; i++) {
-				int colID = _dcdList[i];
+		else if(_finalMaps != null && _colList != null) {
+			for(int i=0; i <_colList.length; i++) {
+				int colID = _colList[i];
 				HashMap<String,String> map = _finalMaps.get(colID);
 				String colName = UtilFunctions.unquote(names[colID-1]);
 				
 				if ( map != null ) 
 				{
-					// order map entries by their recodeID (represented as Strings .. "1", "2", etc.)
-					Ordering<String> orderByID = new Ordering<String>() 
-					{
-			    		public int compare(String s1, String s2) {
-			        		return (Integer.parseInt(s1) - Integer.parseInt(s2));
-			    		}
-					};
 					
-					newNames = orderByID.onResultOf(Functions.forMap(map)).sortedCopy(map.keySet());
+					// order map entries by their recodeID (represented as Strings .. "1", "2", etc.)
+					List<Map.Entry<String, String>> entryList = new ArrayList<Map.Entry<String, String>>(map.entrySet());
+					Comparator<Map.Entry<String, String>> comp = new Comparator<Map.Entry<String, String>>() {
+						@Override
+						public int compare(Entry<String, String> entry1, Entry<String, String> entry2) {
+							String value1 = entry1.getValue();
+							String value2 = entry2.getValue();
+							return (Integer.parseInt(value1) - Integer.parseInt(value2));
+						}
+					};
+					Collections.sort(entryList, comp);
+					newNames = new ArrayList<String>();
+					for (Entry<String, String> entry : entryList) {
+						newNames.add(entry.getKey());
+					}
+					
 					// construct concatenated string of map entries
 					sb.setLength(0);
 					for(int idx=0; idx < newNames.size(); idx++) 
 					{
 						if(idx==0) 
-							sb.append( colName + DCD_NAME_SEP + newNames.get(idx));
+							sb.append( colName + TfUtils.DCD_NAME_SEP + newNames.get(idx));
 						else
-							sb.append( delim + colName + DCD_NAME_SEP + newNames.get(idx));
+							sb.append( delim + colName + TfUtils.DCD_NAME_SEP + newNames.get(idx));
 					}
 					names[colID-1] = sb.toString();			// replace original column name with dcd name
 				}
@@ -288,7 +294,7 @@ public class DummycodeAgent extends TransformationAgent {
 				int colID = _binList[i];
 				
 				// need to consider only binned and dummycoded columns
-				if(isDummyCoded(colID) == -1)
+				if(isApplicable(colID) == -1)
 					continue;
 				
 				int numBins = _numBins[i];
@@ -297,9 +303,9 @@ public class DummycodeAgent extends TransformationAgent {
 				sb.setLength(0);
 				for(int idx=0; idx < numBins; idx++) 
 					if(idx==0) 
-						sb.append( colName + DCD_NAME_SEP + "Bin" + (idx+1) );
+						sb.append( colName + TfUtils.DCD_NAME_SEP + "Bin" + (idx+1) );
 					else
-						sb.append( delim + colName + DCD_NAME_SEP + "Bin" + (idx+1) );
+						sb.append( delim + colName + TfUtils.DCD_NAME_SEP + "Bin" + (idx+1) );
 				names[colID-1] = sb.toString();			// replace original column name with dcd name
 			}
 		
@@ -319,21 +325,20 @@ public class DummycodeAgent extends TransformationAgent {
 	
 	@Override
 	public void loadTxMtd(JobConf job, FileSystem fs, Path txMtdDir, TfUtils agents) throws IOException {
-		if ( _dcdList == null )
-		{
-			_dummycodedLength = numCols;
+		if ( !isApplicable() ) {
+			_dummycodedLength = _clen;
 			return;
 		}
 		
 		// sort to-be dummycoded column IDs in ascending order. This is the order in which the new dummycoded record is constructed in apply() function.
-		Arrays.sort(_dcdList);	
-		_domainSizes = new int[_dcdList.length];
+		Arrays.sort(_colList);	
+		_domainSizes = new int[_colList.length];
 
-		_dummycodedLength = numCols;
+		_dummycodedLength = _clen;
 		
 		//HashMap<String, String> map = null;
-		for(int i=0; i<_dcdList.length; i++) {
-			int colID = _dcdList[i];
+		for(int i=0; i<_colList.length; i++) {
+			int colID = _colList[i];
 			
 			// Find the domain size for colID using _finalMaps or _finalMapsCP
 			int domainSize = 0;
@@ -361,37 +366,47 @@ public class DummycodeAgent extends TransformationAgent {
 				}
 			}
 			_dummycodedLength += _domainSizes[i]-1;
-			//System.out.println("colID=" + colID + ", domainsize=" + _domainSizes[i] + ", dcdLength=" + _dummycodedLength);
 		}
 	}
 
+
+	@Override
+	public MatrixBlock encode(FrameBlock in, MatrixBlock out) {
+		return apply(in, out);
+	}
+
+	@Override
+	public void build(FrameBlock in) {
+		//do nothing
+	}
+	
 	/**
 	 * Method to apply transformations.
 	 * 
-	 * @param words
-	 * @return
+	 * @param words array of strings
+	 * @return array of transformed strings
 	 */
 	@Override
-	public String[] apply(String[] words, TfUtils agents) {
-		
-		if ( _dcdList == null )
+	public String[] apply(String[] words) 
+	{
+		if( !isApplicable() )
 			return words;
 		
 		String[] nwords = new String[(int)_dummycodedLength];
-		
 		int rcdVal = 0;
 		
 		for(int colID=1, idx=0, ncolID=1; colID <= words.length; colID++) {
-			if(idx < _dcdList.length && colID==_dcdList[idx]) {
+			if(idx < _colList.length && colID==_colList[idx]) {
 				// dummycoded columns
 				try {
-				rcdVal = UtilFunctions.parseToInt(UtilFunctions.unquote(words[colID-1]));
-				nwords[ ncolID-1+rcdVal-1 ] = "1";
-				ncolID += _domainSizes[idx];
-				idx++;
-				} catch (Exception e) {
-					System.out.println("Error in dummycoding: colID="+colID + ", rcdVal=" + rcdVal+", word="+words[colID-1] + ", domainSize=" + _domainSizes[idx] + ", dummyCodedLength=" + _dummycodedLength);
-					throw new RuntimeException(e);
+					rcdVal = UtilFunctions.parseToInt(UtilFunctions.unquote(words[colID-1]));
+					nwords[ ncolID-1+rcdVal-1 ] = "1";
+					ncolID += _domainSizes[idx];
+					idx++;
+				} 
+				catch (Exception e) {
+					throw new RuntimeException("Error in dummycoding: colID="+colID + ", rcdVal=" + rcdVal+", word="+words[colID-1] 
+							+ ", domainSize=" + _domainSizes[idx] + ", dummyCodedLength=" + _dummycodedLength);
 				}
 			}
 			else {
@@ -403,26 +418,44 @@ public class DummycodeAgent extends TransformationAgent {
 		return nwords;
 	}
 	
-	/**
-	 * Check if the given column ID is subjected to this transformation.
-	 * 
-	 */
-	public int isDummyCoded(int colID)
+	@Override
+	public MatrixBlock apply(FrameBlock in, MatrixBlock out) 
 	{
-		if(_dcdList == null)
-			return -1;
+		MatrixBlock ret = new MatrixBlock(out.getNumRows(), (int)_dummycodedLength, false);
 		
-		int idx = Arrays.binarySearch(_dcdList, colID);
-		return ( idx >= 0 ? idx : -1);
+		for( int i=0; i<out.getNumRows(); i++ ) {
+			for(int colID=1, idx=0, ncolID=1; colID <= out.getNumColumns(); colID++) {
+				double val = out.quickGetValue(i, colID-1);
+				if(idx < _colList.length && colID==_colList[idx]) {
+					ret.quickSetValue(i, ncolID-1+(int)val-1, 1);
+					ncolID += _domainSizes[idx];
+					idx++;
+				}
+				else {
+					double ptval = UtilFunctions.objectToDouble(in.getSchema()[colID-1], in.get(i, colID-1));
+					ret.quickSetValue(i, ncolID-1, ptval);
+					ncolID++;
+				}
+			}
+		}
+		
+		return ret;
+	}
+
+	@Override
+	public FrameBlock getMetaData(FrameBlock out) {
+		return out;
 	}
 	
 	@Override
-	public void print() {
-		System.out.print("Dummycoding List: \n    ");
-		for(int i : _dcdList) {
-			System.out.print(i + " ");
+	public void initMetaData(FrameBlock meta) {
+		//initialize domain sizes and output num columns
+		_domainSizes = new int[_colList.length];
+		_dummycodedLength = _clen;
+		for( int j=0; j<_colList.length; j++ ) {
+			int colID = _colList[j]; //1-based
+			_domainSizes[j] = (int)meta.getColumnMetadata()[colID-1].getNumDistinct();
+			_dummycodedLength +=  _domainSizes[j]-1;
 		}
-		System.out.println();
 	}
-
 }

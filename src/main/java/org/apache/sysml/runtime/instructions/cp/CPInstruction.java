@@ -19,10 +19,8 @@
 
 package org.apache.sysml.runtime.instructions.cp;
 
-import org.apache.sysml.api.MLContextProxy;
 import org.apache.sysml.lops.runtime.RunMRJobs;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.CPInstructionParser;
 import org.apache.sysml.runtime.instructions.Instruction;
@@ -31,7 +29,13 @@ import org.apache.sysml.runtime.matrix.operators.Operator;
 
 public abstract class CPInstruction extends Instruction 
 {
-	public enum CPINSTRUCTION_TYPE { INVALID, AggregateUnary, AggregateBinary, AggregateTernary, ArithmeticBinary, Ternary, Quaternary, BooleanBinary, BooleanUnary, BuiltinBinary, BuiltinUnary, ParameterizedBuiltin, MultiReturnBuiltin, Builtin, Reorg, RelationalBinary, File, Variable, External, Append, Rand, QSort, QPick, MatrixIndexing, MMTSJ, PMMJ, MMChain, MatrixReshape, Partition, StringInit, CentralMoment, Covariance, UaggOuterChain }; 
+	public enum CPINSTRUCTION_TYPE { INVALID, 
+		AggregateUnary, AggregateBinary, AggregateTernary, ArithmeticBinary, 
+		Ternary, Quaternary, BooleanBinary, BooleanUnary, BuiltinBinary, BuiltinUnary, 
+		BuiltinMultiple, MultiReturnParameterizedBuiltin, ParameterizedBuiltin, MultiReturnBuiltin, 
+		Builtin, Reorg, RelationalBinary, File, Variable, External, Append, Rand, QSort, QPick, 
+		MatrixIndexing, MMTSJ, PMMJ, MMChain, MatrixReshape, Partition, Compression, SpoofFused,
+		StringInit, CentralMoment, Covariance, UaggOuterChain, Convolution };
 	
 	protected CPINSTRUCTION_TYPE _cptype;
 	protected Operator _optr;
@@ -69,7 +73,7 @@ public abstract class CPInstruction extends Instruction
 
 	@Override
 	public Instruction preprocessInstruction(ExecutionContext ec)
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		//default preprocess behavior (e.g., debug state)
 		Instruction tmp = super.preprocessInstruction(ec);
@@ -80,9 +84,6 @@ public abstract class CPInstruction extends Instruction
 			//note: no exchange of updated instruction as labels might change in the general case
 			String updInst = RunMRJobs.updateLabels(tmp.toString(), ec.getVariables());
 			tmp = CPInstructionParser.parseSingleInstruction(updInst);
-			if(MLContextProxy.isActive()) {
-				MLContextProxy.setInstructionForMonitoring(tmp);
-			}
 		}
 
 		return tmp;
@@ -90,5 +91,5 @@ public abstract class CPInstruction extends Instruction
 
 	@Override 
 	public abstract void processInstruction(ExecutionContext ec)
-			throws DMLRuntimeException, DMLUnsupportedOperationException;
+			throws DMLRuntimeException;
 }

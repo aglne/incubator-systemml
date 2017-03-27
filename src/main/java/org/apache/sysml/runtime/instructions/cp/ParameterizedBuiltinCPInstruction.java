@@ -22,10 +22,11 @@ package org.apache.sysml.runtime.instructions.cp;
 import java.util.HashMap;
 
 import org.apache.sysml.lops.Lop;
+import org.apache.sysml.parser.ParameterizedBuiltinFunctionExpression;
 import org.apache.sysml.parser.Statement;
-import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
+import org.apache.sysml.runtime.controlprogram.caching.CacheableData;
+import org.apache.sysml.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.functionobjects.ParameterizedBuiltin;
@@ -38,12 +39,25 @@ import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.matrix.operators.SimpleOperator;
 import org.apache.sysml.runtime.transform.DataTransform;
+import org.apache.sysml.runtime.transform.TfUtils;
 import org.apache.sysml.runtime.transform.decode.Decoder;
 import org.apache.sysml.runtime.transform.decode.DecoderFactory;
+import org.apache.sysml.runtime.transform.encode.Encoder;
+import org.apache.sysml.runtime.transform.encode.EncoderFactory;
+import org.apache.sysml.runtime.transform.meta.TfMetaUtils;
+import org.apache.sysml.runtime.util.DataConverter;
 
 
 public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction 
 {
+	private static final int TOSTRING_MAXROWS = 100;
+	private static final int TOSTRING_MAXCOLS = 100;
+	private static final int TOSTRING_DECIMAL = 3;
+	private static final boolean TOSTRING_SPARSE = false;
+	private static final String TOSTRING_SEPARATOR = " ";
+	private static final String TOSTRING_LINESEPARATOR = "\n";
+	
+	
 	private int arity;
 	protected HashMap<String,String> params;
 	
@@ -58,7 +72,13 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 		return arity;
 	}
 	
-	public HashMap<String,String> getParameterMap() { return params; }
+	public HashMap<String,String> getParameterMap() { 
+		return params; 
+	}
+	
+	public String getParam(String key) {
+		return getParameterMap().get(key);
+	}
 	
 	public static HashMap<String, String> constructParameterMap(String[] params) {
 		// process all elements in "params" except first(opcode) and last(output)
@@ -75,7 +95,7 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 	}
 	
 	public static ParameterizedBuiltinCPInstruction parseInstruction ( String str ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		String[] parts = InstructionUtils.getInstructionPartsWithValueType(str);
 		// first part is always the opcode
@@ -124,7 +144,12 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 		}
 		else if (   opcode.equals("transform")
 				 || opcode.equals("transformapply")
-				 || opcode.equals("transformdecode")) 
+				 || opcode.equals("transformdecode")
+				 || opcode.equals("transformmeta")) 
+		{
+			return new ParameterizedBuiltinCPInstruction(null, paramsMap, out, opcode, str);
+		}
+		else if (	opcode.equals("toString"))
 		{
 			return new ParameterizedBuiltinCPInstruction(null, paramsMap, out, opcode, str);
 		}
@@ -136,7 +161,7 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 
 	@Override 
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		
 		String opcode = getOpcode();
@@ -230,10 +255,10 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 			ec.releaseMatrixInput(params.get("target"));
 		}
 		else if ( opcode.equalsIgnoreCase("transform")) {
-			MatrixObject mo = (MatrixObject) ec.getVariable(params.get("target"));
-			MatrixObject out = (MatrixObject) ec.getVariable(output.getName());			
+			FrameObject fo = ec.getFrameObject(params.get("target"));
+			MatrixObject out = ec.getMatrixObject(output.getName());			
 			try {
-				JobReturn jt = DataTransform.cpDataTransform(this, new MatrixObject[] { mo } , new MatrixObject[] {out} );
+				JobReturn jt = DataTransform.cpDataTransform(this, new FrameObject[] { fo } , new MatrixObject[] {out} );
 				out.updateMatrixCharacteristics(jt.getMatrixCharacteristics(0));
 			} catch (Exception e) {
 				throw new DMLRuntimeException(e);
@@ -243,9 +268,11 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 			//acquire locks
 			FrameBlock data = ec.getFrameInput(params.get("target"));
 			FrameBlock meta = ec.getFrameInput(params.get("meta"));		
+			String[] colNames = data.getColumnNames();
 			
 			//compute transformapply
-			MatrixBlock mbout = DataTransform.cpDataTransform(getParameterMap(), data, meta );
+			Encoder encoder = EncoderFactory.createEncoder(params.get("spec"), colNames, data.getNumColumns(), meta);
+			MatrixBlock mbout = encoder.apply(data, new MatrixBlock(data.getNumRows(), data.getNumColumns(), false));
 			
 			//release locks
 			ec.setMatrixOutput(output.getName(), mbout);
@@ -256,15 +283,60 @@ public class ParameterizedBuiltinCPInstruction extends ComputationCPInstruction
 			//acquire locks
 			MatrixBlock data = ec.getMatrixInput(params.get("target"));
 			FrameBlock meta = ec.getFrameInput(params.get("meta"));
+			String[] colnames = meta.getColumnNames();
 			
 			//compute transformdecode
-			Decoder decoder = DecoderFactory.createDecoder(getParameterMap().get("spec"), null, meta);
-			FrameBlock fbout = decoder.decode(data, new FrameBlock(data.getNumColumns(), ValueType.STRING));
+			Decoder decoder = DecoderFactory.createDecoder(getParameterMap().get("spec"), colnames, null, meta);
+			FrameBlock fbout = decoder.decode(data, new FrameBlock(decoder.getSchema()));
 			
 			//release locks
 			ec.setFrameOutput(output.getName(), fbout);
 			ec.releaseMatrixInput(params.get("target"));
 			ec.releaseFrameInput(params.get("meta"));
+		}
+		else if ( opcode.equalsIgnoreCase("transformmeta")) {
+			//get input spec and path
+			String spec = getParameterMap().get("spec");
+			String path = getParameterMap().get(ParameterizedBuiltinFunctionExpression.TF_FN_PARAM_MTD);
+			String delim = getParameterMap().containsKey("sep") ? getParameterMap().get("sep") : TfUtils.TXMTD_SEP;
+			
+			//execute transform meta data read
+			FrameBlock meta = null;
+			try {
+				meta = TfMetaUtils.readTransformMetaDataFromFile(spec, path, delim);
+			}
+			catch(Exception ex) {
+				throw new DMLRuntimeException(ex);
+			}
+			
+			//release locks
+			ec.setFrameOutput(output.getName(), meta);
+		}
+		else if ( opcode.equalsIgnoreCase("toString")) {
+			//handle input parameters
+			int rows = (getParam("rows")!=null) ? Integer.parseInt(getParam("rows")) : TOSTRING_MAXROWS;
+			int cols = (getParam("cols") != null) ? Integer.parseInt(getParam("cols")) : TOSTRING_MAXCOLS;
+			int decimal = (getParam("decimal") != null) ? Integer.parseInt(getParam("decimal")) : TOSTRING_DECIMAL;
+			boolean sparse = (getParam("sparse") != null) ? Boolean.parseBoolean(getParam("sparse")) : TOSTRING_SPARSE;
+			String separator = (getParam("sep") != null) ? getParam("sep") : TOSTRING_SEPARATOR;
+			String lineseparator = (getParam("linesep") != null) ? getParam("linesep") : TOSTRING_LINESEPARATOR;
+			
+			//get input matrix/frame and convert to string
+			CacheableData<?> data = ec.getCacheableData(getParam("target"));
+			String out = null;
+			if( data instanceof MatrixObject ) {
+				MatrixBlock matrix = (MatrixBlock) data.acquireRead();
+				out = DataConverter.toString(matrix, sparse, separator, lineseparator, rows, cols, decimal);
+			}
+			else if( data instanceof FrameObject ) {
+				FrameBlock frame = (FrameBlock) data.acquireRead();
+				out = DataConverter.toString(frame, sparse, separator, lineseparator, rows, cols, decimal);
+			}
+			else {
+				throw new DMLRuntimeException("toString only converts matrix or frames to string");
+			}
+			ec.releaseCacheableData(getParam("target"));
+			ec.setScalarOutput(output.getName(), new StringObject(out));
 		}
 		else {
 			throw new DMLRuntimeException("Unknown opcode : " + opcode);

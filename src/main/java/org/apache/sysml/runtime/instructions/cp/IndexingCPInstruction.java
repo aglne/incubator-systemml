@@ -46,13 +46,7 @@ public abstract class IndexingCPInstruction extends UnaryCPInstruction
 		colLower = cl;
 		colUpper = cu;
 	}
-	
-	/**
-	 * 
-	 * @param ec
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	protected IndexRange getIndexRange(ExecutionContext ec) throws DMLRuntimeException {
 		return new IndexRange( //rl, ru, cl, ru
 			(int)(ec.getScalarInput(rowLower.getName(), rowLower.getValueType(), rowLower.isLiteral()).getLongValue()-1),
@@ -60,13 +54,7 @@ public abstract class IndexingCPInstruction extends UnaryCPInstruction
 			(int)(ec.getScalarInput(colLower.getName(), colLower.getValueType(), colLower.isLiteral()).getLongValue()-1),
 			(int)(ec.getScalarInput(colUpper.getName(), colUpper.getValueType(), colUpper.isLiteral()).getLongValue()-1));		
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static IndexingCPInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{	
@@ -91,8 +79,10 @@ public abstract class IndexingCPInstruction extends UnaryCPInstruction
 				out.split(parts[6]);
 				if( in.getDataType()==DataType.MATRIX )
 					return new MatrixIndexingCPInstruction(new SimpleOperator(null), in, rl, ru, cl, cu, out, opcode, str);
-				else //DataType.FRAME
+				else if (in.getDataType() == DataType.FRAME)
 					return new FrameIndexingCPInstruction(new SimpleOperator(null), in, rl, ru, cl, cu, out, opcode, str);
+				else 
+					throw new DMLRuntimeException("Can index only on Frames or Matrices");
 			}
 			else {
 				throw new DMLRuntimeException("Invalid number of operands in instruction: " + str);
@@ -118,8 +108,10 @@ public abstract class IndexingCPInstruction extends UnaryCPInstruction
 				out.split(parts[7]);
 				if( lhsInput.getDataType()==DataType.MATRIX )
 					return new MatrixIndexingCPInstruction(new SimpleOperator(null), lhsInput, rhsInput, rl, ru, cl, cu, out, opcode, str);
-				else //DataType.FRAME
+				else if (lhsInput.getDataType() == DataType.FRAME)
 					return new FrameIndexingCPInstruction(new SimpleOperator(null), lhsInput, rhsInput, rl, ru, cl, cu, out, opcode, str);
+				else 
+					throw new DMLRuntimeException("Can index only on Frames or Matrices");
 			}
 			else {
 				throw new DMLRuntimeException("Invalid number of operands in instruction: " + str);

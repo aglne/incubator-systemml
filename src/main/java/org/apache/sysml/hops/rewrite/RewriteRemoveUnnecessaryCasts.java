@@ -21,8 +21,8 @@ package org.apache.sysml.hops.rewrite;
 
 import java.util.ArrayList;
 import org.apache.sysml.hops.Hop;
+import org.apache.sysml.hops.Hop.OpOp1;
 import org.apache.sysml.hops.HopsException;
-import org.apache.sysml.hops.Hop.VisitStatus;
 import org.apache.sysml.hops.UnaryOp;
 import org.apache.sysml.parser.Expression.ValueType;
 
@@ -68,15 +68,12 @@ public class RewriteRemoveUnnecessaryCasts extends HopRewriteRule
 		
 		return root;
 	}
-	
-	/**
-	 * 
-	 * @param hop
-	 */
+
+	@SuppressWarnings("unchecked")
 	private void rule_RemoveUnnecessaryCasts( Hop hop )
 	{
 		//check mark processed
-		if( hop.getVisited() == VisitStatus.DONE )
+		if( hop.isVisited() )
 			return;
 		
 		//recursively process childs
@@ -84,7 +81,7 @@ public class RewriteRemoveUnnecessaryCasts extends HopRewriteRule
 		for( int i=0; i<inputs.size(); i++ )
 			rule_RemoveUnnecessaryCasts( inputs.get(i) );
 		
-		//remove cast if unnecessary
+		//remove unnecessary value type cast 
 		if( hop instanceof UnaryOp && HopRewriteUtils.isValueTypeCast(((UnaryOp)hop).getOp()) )
 		{
 			Hop in = hop.getInput().get(0);
@@ -116,7 +113,21 @@ public class RewriteRemoveUnnecessaryCasts extends HopRewriteRule
 			}
 		}
 		
+		//remove unnecessary data type casts
+		if( hop instanceof UnaryOp && hop.getInput().get(0) instanceof UnaryOp ) {
+			UnaryOp uop1 = (UnaryOp) hop;
+			UnaryOp uop2 = (UnaryOp) hop.getInput().get(0);
+			if( (uop1.getOp()==OpOp1.CAST_AS_MATRIX && uop2.getOp()==OpOp1.CAST_AS_SCALAR) 
+				|| (uop1.getOp()==OpOp1.CAST_AS_SCALAR && uop2.getOp()==OpOp1.CAST_AS_MATRIX) ) {
+				Hop input = uop2.getInput().get(0);
+				//rewire parents
+				ArrayList<Hop> parents = (ArrayList<Hop>) hop.getParent().clone();
+				for( Hop p : parents )
+					HopRewriteUtils.replaceChildReference(p, hop, input);
+			}
+		}
+		
 		//mark processed
-		hop.setVisited( VisitStatus.DONE );
+		hop.setVisited();
 	}
 }

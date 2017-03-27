@@ -23,7 +23,7 @@
 Y = matrix(1, rows=10, cols=10);
 
 
-for( i in 1:0 ) {
+for( i in seq(1,0,1) ) {
    Y = read($1);
 }   
    

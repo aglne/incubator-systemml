@@ -19,7 +19,6 @@
 
 package org.apache.sysml.runtime.transform.decode;
 
-import java.util.Arrays;
 import java.util.List;
 
 import org.apache.sysml.parser.Expression.ValueType;
@@ -34,28 +33,25 @@ import org.apache.sysml.runtime.matrix.data.MatrixBlock;
  */
 public class DecoderComposite extends Decoder
 {
+	private static final long serialVersionUID = 5790600547144743716L;
+	
 	private List<Decoder> _decoders = null;
 	
-	protected DecoderComposite(List<ValueType> schema, List<Decoder> decoders) {
-		super(schema);
+	protected DecoderComposite(ValueType[] schema, List<Decoder> decoders) {
+		super(schema, null);
 		_decoders = decoders;
-	}
-	
-	protected DecoderComposite(List<ValueType> schema, Decoder[] decoders) {
-		super(schema);
-		_decoders = Arrays.asList(decoders);
-	}
-
-	@Override
-	public void decode(double[] in, Object[] out) {
-		for( Decoder decoder : _decoders )
-			decoder.decode(in, out);
 	}
 
 	@Override
 	public FrameBlock decode(MatrixBlock in, FrameBlock out) {
 		for( Decoder decoder : _decoders )
-			decoder.decode(in, out);	
+			out = decoder.decode(in, out);	
 		return out;
+	}
+	
+	@Override
+	public void initMetaData(FrameBlock meta) {
+		for( Decoder decoder : _decoders )
+			decoder.initMetaData(meta);	
 	}
 }

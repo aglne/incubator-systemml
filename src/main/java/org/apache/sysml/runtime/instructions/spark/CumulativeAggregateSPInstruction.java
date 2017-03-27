@@ -26,7 +26,6 @@ import org.apache.spark.api.java.function.PairFunction;
 import scala.Tuple2;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
@@ -38,9 +37,6 @@ import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysml.runtime.matrix.data.OperationsOnMatrixValues;
 import org.apache.sysml.runtime.matrix.operators.AggregateUnaryOperator;
 
-/**
- * 
- */
 public class CumulativeAggregateSPInstruction extends AggregateUnarySPInstruction 
 {
 	
@@ -50,12 +46,6 @@ public class CumulativeAggregateSPInstruction extends AggregateUnarySPInstructio
 		_sptype = SPINSTRUCTION_TYPE.CumsumAggregate;		
 	}
 
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
 	public static CumulativeAggregateSPInstruction parseInstruction( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -73,7 +63,7 @@ public class CumulativeAggregateSPInstruction extends AggregateUnarySPInstructio
 	
 	@Override
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		MatrixCharacteristics mc = sec.getMatrixCharacteristics(input1.getName());
@@ -88,17 +78,13 @@ public class CumulativeAggregateSPInstruction extends AggregateUnarySPInstructio
 		AggregateUnaryOperator auop = (AggregateUnaryOperator) _optr;
 		JavaPairRDD<MatrixIndexes,MatrixBlock> out = 
 				in.mapToPair(new RDDCumAggFunction(auop, rlen, brlen, bclen));
-		out = RDDAggregateUtils.mergeByKey(out);
+		out = RDDAggregateUtils.mergeByKey(out, false);
 		
 		//put output handle in symbol table
 		sec.setRDDHandleForVariable(output.getName(), out);	
 		sec.addLineageRDD(output.getName(), input1.getName());
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class RDDCumAggFunction implements PairFunction<Tuple2<MatrixIndexes, MatrixBlock>, MatrixIndexes, MatrixBlock> 
 	{
 		private static final long serialVersionUID = 11324676268945117L;

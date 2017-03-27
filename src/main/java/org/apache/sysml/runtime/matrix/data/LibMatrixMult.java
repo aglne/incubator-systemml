@@ -37,7 +37,6 @@ import org.apache.sysml.lops.WeightedSigmoid.WSigmoidType;
 import org.apache.sysml.lops.WeightedSquaredLoss.WeightsType;
 import org.apache.sysml.lops.WeightedUnaryMM.WUMMType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.functionobjects.SwapIndex;
 import org.apache.sysml.runtime.functionobjects.ValueFunction;
 import org.apache.sysml.runtime.matrix.operators.ReorgOperator;
@@ -69,9 +68,10 @@ import org.apache.sysml.runtime.util.UtilFunctions;
 public class LibMatrixMult 
 {
 	//internal configuration
-	public static final boolean LOW_LEVEL_OPTIMIZATION = true;
-	public static final long MEM_OVERHEAD_THRESHOLD = 2L*1024*1024; //MAX 2 MB
+	private static final boolean LOW_LEVEL_OPTIMIZATION = true;
+	private static final long MEM_OVERHEAD_THRESHOLD = 2L*1024*1024; //MAX 2 MB
 	private static final long PAR_MINFLOP_THRESHOLD = 2L*1024*1024; //MIN 2 MFLOP
+	private static final int L2_CACHESIZE = 256 *1024; //256KB (common size)
 	
 	private LibMatrixMult() {
 		//prevent instantiation via private constructor
@@ -91,9 +91,40 @@ public class LibMatrixMult
 	 * @param m1 first matrix
 	 * @param m2 second matrix
 	 * @param ret result matrix
-	 * @throws DMLRuntimeException 
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void matrixMult(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret) 
+		throws DMLRuntimeException
+	{	
+		matrixMult(m1, m2, ret, 0, m1.rlen);
+	}
+	
+	/**
+	 * This method allows one to disabling exam sparsity. This feature is useful if matrixMult is used as an intermediate
+	 * operation (for example: LibMatrixDNN). It makes sense for LibMatrixDNN because the output is internally
+	 * consumed by another dense instruction, which makes repeated conversion to sparse wasteful.
+	 * This should be used in rare cases and if you are unsure,
+	 * use the method 'matrixMult(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret)' instead.
+	 * 
+	 * @param m1 first matrix
+	 * @param m2 second matrix
+	 * @param ret result matrix
+	 * @param examSparsity if false, sparsity examination is disabled
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 */
+	public static void matrixMult(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean examSparsity) 
+			throws DMLRuntimeException
+	{	
+		matrixMult(m1, m2, ret, 0, m1.rlen, examSparsity);
+	}
+	
+	public static void matrixMult(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, int rl, int ru) 
+			throws DMLRuntimeException
+	{
+		matrixMult(m1, m2, ret, rl, ru, true);
+	}
+
+	public static void matrixMult(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, int rl, int ru, boolean examSparsity) 
 		throws DMLRuntimeException
 	{	
 		//check inputs / outputs
@@ -112,25 +143,28 @@ public class LibMatrixMult
 			ret.allocateDenseBlock();
 		
 		//prepare row-upper for special cases of vector-matrix
-		boolean pm2 = checkParMatrixMultRightInput(m1, m2, Integer.MAX_VALUE);
-		int ru = pm2 ? m2.rlen : m1.rlen; 
+		boolean pm2 = checkParMatrixMultRightInputRows(m1, m2, Integer.MAX_VALUE);
+		int ru2 = (pm2 && ru==m1.rlen) ? m2.rlen : ru; 
+		int cu = m2.clen;
 		
 		//core matrix mult computation
 		if( m1.isUltraSparse() || m2.isUltraSparse() )
-			matrixMultUltraSparse(m1, m2, ret, 0, ru);
+			matrixMultUltraSparse(m1, m2, ret, 0, ru2);
 		else if(!m1.sparse && !m2.sparse)
-			matrixMultDenseDense(m1, m2, ret, tm2, pm2, 0, ru);
+			matrixMultDenseDense(m1, m2, ret, tm2, pm2, 0, ru2, 0, cu);
 		else if(m1.sparse && m2.sparse)
-			matrixMultSparseSparse(m1, m2, ret, pm2, 0, ru);
+			matrixMultSparseSparse(m1, m2, ret, pm2, 0, ru2);
 		else if(m1.sparse)
-			matrixMultSparseDense(m1, m2, ret, pm2, 0, ru);
+			matrixMultSparseDense(m1, m2, ret, pm2, 0, ru2);
 		else
-			matrixMultDenseSparse(m1, m2, ret, pm2, 0, ru);
+			matrixMultDenseSparse(m1, m2, ret, pm2, 0, ru2);
 		
 		//post-processing: nnz/representation
 		if( !ret.sparse )
 			ret.recomputeNonZeros();
-		ret.examSparsity();
+		
+		if(examSparsity)
+			ret.examSparsity();
 		
 		//System.out.println("MM ("+m1.isInSparseFormat()+","+m1.getNumRows()+","+m1.getNumColumns()+","+m1.getNonZeros()+")x" +
 		//		              "("+m2.isInSparseFormat()+","+m2.getNumRows()+","+m2.getNumColumns()+","+m2.getNonZeros()+") in "+time.stop());
@@ -138,13 +172,13 @@ public class LibMatrixMult
 	
 	/**
 	 * Performs a multi-threaded matrix multiplication and stores the result in the output matrix.
-	 * The parameter k (k>=1) determines the max parallelism k' with k'=min(k, vcores, m1.rlen).
+	 * The parameter k (k&gt;=1) determines the max parallelism k' with k'=min(k, vcores, m1.rlen).
 	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret
-	 * @param k
-	 * @throws DMLRuntimeException 
+	 * @param m1 first matrix
+	 * @param m2 second matrix
+	 * @param ret result matrix
+	 * @param k maximum parallelism
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void matrixMult(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, int k) 
 		throws DMLRuntimeException
@@ -176,31 +210,37 @@ public class LibMatrixMult
 		else
 			ret.allocateSparseRowsBlock();
 		
+		if (!ret.isThreadSafe()){
+			matrixMult(m1, m2, ret);
+			return;
+		}
+		
 		//prepare row-upper for special cases of vector-matrix / matrix-matrix
-		boolean pm2 = checkParMatrixMultRightInput(m1, m2, k);
-		int ru = pm2 ? m2.rlen : m1.rlen; 
+		boolean pm2r = checkParMatrixMultRightInputRows(m1, m2, k);
+		boolean pm2c = checkParMatrixMultRightInputCols(m1, m2, k, pm2r);
+		int num = pm2r ? m2.rlen : pm2c ? m2.clen : m1.rlen; 
 		
 		//core multi-threaded matrix mult computation
 		//(currently: always parallelization over number of rows)
 		try {
 			ExecutorService pool = Executors.newFixedThreadPool( k );
 			ArrayList<MatrixMultTask> tasks = new ArrayList<MatrixMultTask>();
-			int nk = pm2 ? k : Math.max(Math.min(8*k,ru/8), k);
-			int blklen = (int)(Math.ceil((double)ru/nk));
-			for( int i=0; i<nk & i*blklen<ru; i++ )
-				tasks.add(new MatrixMultTask(m1, m2, ret, tm2, pm2, i*blklen, Math.min((i+1)*blklen, ru)));
+			int nk = (pm2r||pm2c) ? k : UtilFunctions.roundToNext(Math.min(8*k,num/32), k);
+			ArrayList<Integer> blklens = getBalancedBlockSizes(num, nk);
+			for( int i=0, lb=0; i<blklens.size(); lb+=blklens.get(i), i++ )
+				tasks.add(new MatrixMultTask(m1, m2, ret, tm2, pm2r, pm2c, lb, lb+blklens.get(i)));
 			//execute tasks
 			List<Future<Object>> taskret = pool.invokeAll(tasks);	
 			pool.shutdown();
 			//aggregate partial results (nnz, ret for vector/matrix)
 			ret.nonZeros = 0; //reset after execute
 			for( Future<Object> task : taskret ) {
-				if( pm2 )
+				if( pm2r )
 					vectAdd((double[])task.get(), ret.denseBlock, 0, 0, ret.rlen*ret.clen);
 				else
 					ret.nonZeros += (Long)task.get();
 			}
-			if( pm2 )
+			if( pm2r )
 				ret.recomputeNonZeros();
 		}
 		catch(Exception ex) {
@@ -220,16 +260,15 @@ public class LibMatrixMult
 	 * All variants use a IKJ access pattern, and internally use dense output. After the
 	 * actual computation, we recompute nnz and check for sparse/dense representation.
 	 * 
-	 * @param m1
-	 * @param m2
-	 * @param w
-	 * @param ret
-	 * @param ct
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
+	 * @param mX X matrix
+	 * @param mV v matrix
+	 * @param mW w matrix
+	 * @param ret result matrix
+	 * @param ct chain type
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void matrixMultChain(MatrixBlock mX, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, ChainType ct) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{		
 		//check inputs / outputs (after that mV and mW guaranteed to be dense)
 		if( mX.isEmptyBlock(false) || mV.isEmptyBlock(false) || (mW !=null && mW.isEmptyBlock(false)) ) {
@@ -259,33 +298,32 @@ public class LibMatrixMult
 
 	/**
 	 * Performs a parallel matrix multiplication chain operation of type t(X)%*%(X%*%v) or t(X)%*%(w*(X%*%v)).
-	 * The parameter k (k>=1) determines the max parallelism k' with k'=min(k, vcores, m1.rlen).
+	 * The parameter k (k&gt;=1) determines the max parallelism k' with k'=min(k, vcores, m1.rlen).
 	 * 
 	 * NOTE: This multi-threaded mmchain operation has additional memory requirements of k*ncol(X)*8bytes 
 	 * for partial aggregation. Current max memory: 256KB; otherwise redirectly to sequential execution.
 	 * 
-	 * @param mX
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param ct
-	 * @param k
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
+	 * @param mX X matrix
+	 * @param mV v matrix
+	 * @param mW w matrix
+	 * @param ret result matrix
+	 * @param ct chain type
+	 * @param k maximum parallelism
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void matrixMultChain(MatrixBlock mX, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, ChainType ct, int k) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{		
 		//check inputs / outputs (after that mV and mW guaranteed to be dense)
 		if( mX.isEmptyBlock(false) || mV.isEmptyBlock(false) || (mW !=null && mW.isEmptyBlock(false)) ) {
 			ret.examSparsity(); //turn empty dense into sparse
 			return;
 		}
-
+		
 		//check too high additional memory requirements (fallback to sequential)
 		//check too small workload in terms of flops (fallback to sequential too)
 		if( 8L * mV.rlen * k > MEM_OVERHEAD_THRESHOLD 
-			|| 4L * mX.rlen * mX.clen < PAR_MINFLOP_THRESHOLD ) 
+			|| 4L * mX.rlen * mX.clen < PAR_MINFLOP_THRESHOLD) 
 		{ 
 			matrixMultChain(mX, mV, mW, ret, ct);
 			return;
@@ -293,7 +331,7 @@ public class LibMatrixMult
 		
 		//Timing time = new Timing(true);
 				
-		//pre-processing
+		//pre-processing (no need to check isThreadSafe)
 		ret.sparse = false;
 		ret.allocateDenseBlock();
 		
@@ -305,7 +343,7 @@ public class LibMatrixMult
 			int blklen = (int)(Math.ceil((double)mX.rlen/k));
 			blklen += (blklen%24 != 0)?24-blklen%24:0;
 			for( int i=0; i<k & i*blklen<mX.rlen; i++ )
-				tasks.add(new MatrixMultChainTask(mX, mV, mW, ret, ct, i*blklen, Math.min((i+1)*blklen, mX.rlen)));
+				tasks.add(new MatrixMultChainTask(mX, mV, mW, ct, i*blklen, Math.min((i+1)*blklen, mX.rlen)));
 			//execute tasks
 			List<Future<double[]>> taskret = pool.invokeAll(tasks);	
 			pool.shutdown();
@@ -325,16 +363,8 @@ public class LibMatrixMult
 		//		              "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
 
-	/**
-	 * 
-	 * @param m1
-	 * @param ret
-	 * @param leftTranspose
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
 	public static void matrixMultTransposeSelf( MatrixBlock m1, MatrixBlock ret, boolean leftTranspose )
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		//check inputs / outputs
 		if( m1.isEmptyBlock(false) ) {
@@ -362,17 +392,8 @@ public class LibMatrixMult
 		//System.out.println("TSMM ("+m1.isInSparseFormat()+","+m1.getNumRows()+","+m1.getNumColumns()+","+m1.getNonZeros()+","+leftTranspose+") in "+time.stop());
 	}
 
-	/**
-	 * 
-	 * @param m1
-	 * @param ret
-	 * @param leftTranspose
-	 * @param k
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
 	public static void matrixMultTransposeSelf( MatrixBlock m1, MatrixBlock ret, boolean leftTranspose, int k )
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		//check inputs / outputs
 		if( m1.isEmptyBlock(false) ) {
@@ -384,7 +405,7 @@ public class LibMatrixMult
 		//check too small workload in terms of flops (fallback to sequential too)
 		if( ret.rlen == 1 
 			|| leftTranspose && 1L * m1.rlen * m1.clen * m1.clen < PAR_MINFLOP_THRESHOLD
-			|| !leftTranspose && 1L * m1.clen * m1.rlen * m1.rlen < PAR_MINFLOP_THRESHOLD ) 
+			|| !leftTranspose && 1L * m1.clen * m1.rlen * m1.rlen < PAR_MINFLOP_THRESHOLD) 
 		{ 
 			matrixMultTransposeSelf(m1, ret, leftTranspose);
 			return;
@@ -392,9 +413,9 @@ public class LibMatrixMult
 		
 		//Timing time = new Timing(true);
 		
-		//pre-processing
+		//pre-processing (no need to check isThreadSafe)
 		m1 = prepMatrixMultTransposeSelfInput(m1, leftTranspose);
-		ret.sparse = false;
+		ret.sparse = false;	
 		ret.allocateDenseBlock();
 	
 		//core multi-threaded matrix mult computation
@@ -405,8 +426,10 @@ public class LibMatrixMult
 			int blklen = (int)(Math.ceil((double)ret.rlen/(2*k)));
 			for( int i=0; i<2*k & i*blklen<ret.rlen; i++ )
 				tasks.add(new MatrixMultTransposeTask(m1, ret, leftTranspose, i*blklen, Math.min((i+1)*blklen, ret.rlen)));
-			pool.invokeAll(tasks);	
+			List<Future<Object>> rtasks = pool.invokeAll(tasks);	
 			pool.shutdown();
+			for( Future<Object> rtask : rtasks )
+				rtask.get(); //error handling
 		}
 		catch(Exception ex) {
 			throw new DMLRuntimeException(ex);
@@ -419,18 +442,9 @@ public class LibMatrixMult
 		
 		//System.out.println("TSMM k="+k+" ("+m1.isInSparseFormat()+","+m1.getNumRows()+","+m1.getNumColumns()+","+m1.getNonZeros()+","+leftTranspose+") in "+time.stop());
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret1
-	 * @param ret2
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
+
 	public static void matrixMultPermute( MatrixBlock pm1, MatrixBlock m2, MatrixBlock ret1, MatrixBlock ret2 )
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		//check inputs / outputs
 		if( pm1.isEmptyBlock(false) || m2.isEmptyBlock(false) )
@@ -465,18 +479,8 @@ public class LibMatrixMult
 		//                  "("+m2.isInSparseFormat()+","+m2.getNumRows()+","+m2.getNumColumns()+","+m2.getNonZeros()+") in "+time.stop());
 	}	
 
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret1
-	 * @param ret2
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 * @throws DMLRuntimeException 
-	 */
 	public static void matrixMultPermute( MatrixBlock pm1, MatrixBlock m2, MatrixBlock ret1, MatrixBlock ret2, int k)
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		//check inputs / outputs
 		if( pm1.isEmptyBlock(false) || m2.isEmptyBlock(false) )
@@ -491,7 +495,7 @@ public class LibMatrixMult
 		//Timing time = new Timing(true);
 		
 		//allocate first output block (second allocated if needed)
-		ret1.sparse = false;
+		ret1.sparse = false;	  // no need to check isThreadSafe
 		ret1.allocateDenseBlock();
 		
 		try
@@ -519,18 +523,7 @@ public class LibMatrixMult
 		// System.out.println("PMM Par ("+pm1.isInSparseFormat()+","+pm1.getNumRows()+","+pm1.getNumColumns()+","+pm1.getNonZeros()+")x" +
 		//                   "("+m2.isInSparseFormat()+","+m2.getNumRows()+","+m2.getNumColumns()+","+m2.getNonZeros()+") in "+time.stop());
 	}	
-	
 
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @throws DMLRuntimeException 
-	 */
 	public static void matrixMultWSLoss(MatrixBlock mX, MatrixBlock mU, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, WeightsType wt) 
 		throws DMLRuntimeException 
 	{
@@ -556,17 +549,7 @@ public class LibMatrixMult
 		//System.out.println("MMWSLoss " +wt.toString()+ " ("+mX.isInSparseFormat()+","+mX.getNumRows()+","+mX.getNumColumns()+","+mX.getNonZeros()+")x" +
 		//                  "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @throws DMLRuntimeException 
-	 */
+
 	public static void matrixMultWSLoss(MatrixBlock mX, MatrixBlock mU, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, WeightsType wt, int k) 
 		throws DMLRuntimeException 
 	{
@@ -578,7 +561,8 @@ public class LibMatrixMult
 		}
 		
 		//check no parallelization benefit (fallback to sequential)
-		if (mX.rlen == 1) {
+		//no need to check isThreadSafe (scalar output)
+		if( mX.rlen == 1 ) {
 			matrixMultWSLoss(mX, mU, mV, mW, ret, wt);
 			return;
 		}
@@ -605,15 +589,6 @@ public class LibMatrixMult
 		//                   "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @throws DMLRuntimeException
-	 */
 	public static void matrixMultWSigmoid(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WSigmoidType wt) 
 		throws DMLRuntimeException 
 	{
@@ -645,16 +620,6 @@ public class LibMatrixMult
 		//                 "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @param k
-	 * @throws DMLRuntimeException
-	 */
 	public static void matrixMultWSigmoid(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WSigmoidType wt, int k) 
 		throws DMLRuntimeException 
 	{
@@ -665,7 +630,7 @@ public class LibMatrixMult
 		}
 
 		//check no parallelization benefit (fallback to sequential)
-		if (mW.rlen == 1) {
+		if (mW.rlen == 1 || !MatrixBlock.isThreadSafe(mW.sparse)) {
 			matrixMultWSigmoid(mW, mU, mV, ret, wt);
 			return;
 		}
@@ -709,12 +674,13 @@ public class LibMatrixMult
 	 * which would give 0/0=NaN) but INF/-INF for non-zero entries in V where the corresponding cell in (Y%*%X) 
 	 * is zero.
 	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @throws DMLRuntimeException
+	 * @param mW matrix W
+	 * @param mU matrix U
+	 * @param mV matrix V
+	 * @param mX matrix X
+	 * @param ret result type
+	 * @param wt weighted divide matrix multiplication type
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void matrixMultWDivMM(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock mX, MatrixBlock ret, WDivMMType wt) 
 		throws DMLRuntimeException 
@@ -758,13 +724,14 @@ public class LibMatrixMult
 	 * which would give 0/0=NaN) but INF/-INF for non-zero entries in V where the corresponding cell in (Y%*%X) 
 	 * is zero.
 	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @param k
-	 * @throws DMLRuntimeException
+	 * @param mW matrix W
+	 * @param mU matrix U
+	 * @param mV matrix V
+	 * @param mX matrix X
+	 * @param ret result matrix
+	 * @param wt weighted divide matrix multiplication type
+	 * @param k maximum parallelism
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void matrixMultWDivMM(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock mX, MatrixBlock ret, WDivMMType wt, int k) 
 		throws DMLRuntimeException 
@@ -784,6 +751,11 @@ public class LibMatrixMult
 		ret.sparse = wt.isBasic()?mW.sparse:false;
 		ret.allocateDenseOrSparseBlock();
 
+		if (!ret.isThreadSafe()){
+			matrixMultWDivMM(mW, mU, mV, mX, ret, wt);
+			return;
+		}
+		
 		try 
 		{			
 			ExecutorService pool = Executors.newFixedThreadPool(k);
@@ -819,16 +791,6 @@ public class LibMatrixMult
 		//                "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}	
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param eps
-	 * @param ret
-	 * @param wt
-	 * @throws DMLRuntimeException
-	 */
 	public static void matrixMultWCeMM(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, double eps, MatrixBlock ret, WCeMMType wt) 
 		throws DMLRuntimeException 
 	{
@@ -855,18 +817,7 @@ public class LibMatrixMult
 		//System.out.println("MMWCe "+wt.toString()+" ("+mW.isInSparseFormat()+","+mW.getNumRows()+","+mW.getNumColumns()+","+mW.getNonZeros()+")x" +
 		//                 "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
-	
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param eps
-	 * @param ret
-	 * @param wt
-	 * @param k
-	 * @throws DMLRuntimeException
-	 */
+
 	public static void matrixMultWCeMM(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, double eps, MatrixBlock ret, WCeMMType wt, int k) 
 		throws DMLRuntimeException 
 	{
@@ -878,7 +829,7 @@ public class LibMatrixMult
 
 		//Timing time = new Timing(true);
 
-		//pre-processing
+		//pre-processing (no need to check isThreadSafe)
 		ret.sparse = false;
 		ret.allocateDenseBlock();
 		
@@ -902,15 +853,6 @@ public class LibMatrixMult
 		//                 "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @throws DMLRuntimeException
-	 */
 	public static void matrixMultWuMM(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WUMMType wt, ValueFunction fn) 
 		throws DMLRuntimeException 
 	{
@@ -942,16 +884,6 @@ public class LibMatrixMult
 		//                 "("+mV.isInSparseFormat()+","+mV.getNumRows()+","+mV.getNumColumns()+","+mV.getNonZeros()+") in "+time.stop());
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @param k
-	 * @throws DMLRuntimeException
-	 */
 	public static void matrixMultWuMM(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WUMMType wt, ValueFunction fn, int k) 
 		throws DMLRuntimeException 
 	{
@@ -960,9 +892,9 @@ public class LibMatrixMult
 			ret.examSparsity(); //turn empty dense into sparse
 			return; 
 		}
-
+		
 		//check no parallelization benefit (fallback to sequential)
-		if (mW.rlen == 1) {
+		if (mW.rlen == 1 || !MatrixBlock.isThreadSafe(mW.sparse)) {
 			matrixMultWuMM(mW, mU, mV, ret, wt, fn);
 			return;
 		}
@@ -1002,15 +934,8 @@ public class LibMatrixMult
 	//////////////////////////////////////////
 	// optimized matrix mult implementation //
 	//////////////////////////////////////////
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret
-	 * @throws DMLRuntimeException 
-	 */
-	private static void matrixMultDenseDense(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean tm2, boolean pm2, int rl, int ru) 
+
+	private static void matrixMultDenseDense(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean tm2, boolean pm2, int rl, int ru, int cl, int cu) 
 		throws DMLRuntimeException
 	{			
 		double[] a = m1.denseBlock;
@@ -1022,11 +947,11 @@ public class LibMatrixMult
 
 		if( LOW_LEVEL_OPTIMIZATION )
 		{
-			if( m==1 && n==1 ) 		   //DOT PRODUCT
+			if( m==1 && n==1 ) 		      //DOT PRODUCT
 			{
 				c[0] = dotProduct(a, b, cd);
 			}
-			else if( n>1 && cd == 1 )  //OUTER PRODUCT
+			else if( n>1 && cd == 1 )     //OUTER PRODUCT
 			{
 				for( int i=rl, cix=rl*n; i < ru; i++, cix+=n) {
 					if( a[i] == 1 )
@@ -1037,16 +962,29 @@ public class LibMatrixMult
 						Arrays.fill(c, cix, cix+n, 0);
 				}
 			}
-			else if( n==1 && cd == 1 ) //VECTOR-SCALAR
+			else if( n==1 && cd == 1 )    //VECTOR-SCALAR
 			{
 				vectMultiplyWrite(b[0], a, c, rl, rl, ru-rl);
 			}
-			else if( n==1 )            //MATRIX-VECTOR
+			else if( n==1 && cd<=2*1024 ) //MATRIX-VECTOR (short rhs)
 			{
 				for( int i=rl, aix=rl*cd; i < ru; i++, aix+=cd) 
-					c[ i ] = dotProduct(a, b, aix, 0, cd);	
+					c[i] = dotProduct(a, b, aix, 0, cd);	
 			}
-			else if( pm2 && m==1 )     //VECTOR-MATRIX
+			else if( n==1 )               //MATRIX-VECTOR (tall rhs)
+			{
+				final int blocksizeI = 32;
+				final int blocksizeK = 2*1024; //16KB vector blocks (L1) 
+				for( int bi=rl; bi<ru; bi+=blocksizeI ) {
+					int bimin = Math.min(bi+blocksizeI, ru);
+					for( int bk=0; bk<cd; bk+=blocksizeK ) {
+						int bkmin = Math.min(bk+blocksizeK, cd);
+						for( int i=bi, aix=bi*cd+bk; i<bimin; i++, aix+=cd) 
+							c[i] += dotProduct(a, b, aix, bk, bkmin-bk);	
+					}
+				}
+			}
+			else if( pm2 && m==1 )        //VECTOR-MATRIX
 			{
 				//parallelization over rows in rhs matrix
 				//rest not aligned to blocks of 2 rows
@@ -1064,29 +1002,34 @@ public class LibMatrixMult
 						vectMultiplyAdd(a[k+1], b, c, bix+n, 0, n);
 				}
 			}
-			else if( pm2 && m<=16 )    //MATRIX-MATRIX (short lhs) 
+			else if( pm2 && m<=16 )       //MATRIX-MATRIX (short lhs) 
 			{
-				//parallelization over rows in rhs matrix
-				final int kn = (ru-rl)%2;				
+				//cache-conscious parallelization over rows in rhs matrix
+				final int kn = (ru-rl)%4;				
 				
 				//rest not aligned to blocks of 2 rows
-				if( kn == 1 )
-					for( int i=0, aix=0, cix=0; i<m; i++, aix+=cd, cix+=n )
-						if( a[aix+rl] != 0 )
-							vectMultiplyAdd(a[aix+rl], b, c, rl*n, cix, n);
-				
-				//compute blocks of 2 rows (w/ repeated scan for each row in lhs) 
-				for( int k=rl+kn, bix=(rl+kn)*n; k<ru; k+=2, bix+=2*n )
-					for( int i=0, aix=0, cix=0; i<m; i++, aix+=cd, cix+=n ){
-						if( a[aix+k] != 0 && a[aix+k+1] != 0  )
-							vectMultiplyAdd2(a[aix+k], a[aix+k+1], b, c, bix, bix+n, cix, n);
-						else if( a[aix+k] != 0 )
+				for( int i=0, aix=0, cix=0; i<m; i++, aix+=cd, cix+=n )
+					for( int k=rl, bix=rl*n; k<rl+kn; k++, bix+=n )
+						if( a[aix+k] != 0 )
 							vectMultiplyAdd(a[aix+k], b, c, bix, cix, n);
-						else if( a[aix+k+1] != 0 )	
-							vectMultiplyAdd(a[aix+k+1], b, c, bix+n, cix, n);
-					}				
+
+				final int blocksizeK = 48;  
+				final int blocksizeJ = 1024; 
+				
+				//blocked execution
+				for( int bk = rl+kn; bk < ru; bk+=blocksizeK ) 
+					for( int bj = 0, bkmin = Math.min(cd, bk+blocksizeK); bj < n; bj+=blocksizeJ ) 
+					{
+						//compute blocks of 4 rows in rhs w/ IKJ
+						int bjlen = Math.min(n, bj+blocksizeJ)-bj;
+						for( int i=0, aix=0, cix=bj; i<m; i++, aix+=cd, cix+=n )
+							for( int k=bk, bix=bk*n; k<bkmin; k+=4, bix+=4*n ) {
+								vectMultiplyAdd4(a[aix+k], a[aix+k+1], a[aix+k+2], a[aix+k+3], 
+										b, c, bix, bix+n, bix+2*n, bix+3*n, cix, bjlen);
+							}
+					}
 			}
-			else if( tm2 )             //MATRIX-MATRIX (skinny rhs)
+			else if( tm2 )                //MATRIX-MATRIX (skinny rhs)
 			{
 				//note: prepared rhs input via transpose for: m > n && cd > 64 && n < 64
 				//however, explicit flag required since dimension change m2
@@ -1095,7 +1038,7 @@ public class LibMatrixMult
 					for( int j=0, bix=0; j<n2; j++, bix+=cd )
 						c[cix+j] = dotProduct(a, b, aix, bix, cd);
 			}
-			else                       //MATRIX-MATRIX
+			else                          //MATRIX-MATRIX
 			{	
 				//1) Unrolled inner loop (for better instruction-level parallelism)
 				//2) Blocked execution (for less cache trashing in parallel exec) 	
@@ -1112,10 +1055,10 @@ public class LibMatrixMult
 				//blocked execution
 				for( int bi = rl; bi < ru; bi+=blocksizeI )
 					for( int bk = 0, bimin = Math.min(ru, bi+blocksizeI); bk < cd; bk+=blocksizeK ) 
-						for( int bj = 0, bkmin = Math.min(cd, bk+blocksizeK); bj < n; bj+=blocksizeJ ) 
+						for( int bj = cl, bkmin = Math.min(cd, bk+blocksizeK); bj < cu; bj+=blocksizeJ ) 
 						{
 							int bklen = bkmin-bk;
-							int bjlen = Math.min(n, bj+blocksizeJ)-bj;
+							int bjlen = Math.min(cu, bj+blocksizeJ)-bj;
 							
 							//core sub block matrix multiplication
 				    		for( int i = bi; i < bimin; i++) 
@@ -1158,14 +1101,7 @@ public class LibMatrixMult
 		}
 		
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultDenseSparse(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean pm2, int rl, int ru) 
 		throws DMLRuntimeException 
 	{	
@@ -1239,14 +1175,7 @@ public class LibMatrixMult
 				}		
 		}
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultSparseDense(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean pm2, int rl, int ru) 
 		throws DMLRuntimeException
 	{	
@@ -1255,24 +1184,48 @@ public class LibMatrixMult
 		final int m = m1.rlen;
 		final int n = m2.clen;
 		final int cd = m2.rlen;
+		final long xsp = (long)m*cd/m1.nonZeros;
 
 		if( LOW_LEVEL_OPTIMIZATION )
 		{
 			SparseBlock a = m1.sparseBlock;
 			
-			if( m==1 && n==1 )         //DOT PRODUCT
+			if( m==1 && n==1 )            //DOT PRODUCT
 			{
 				if( !a.isEmpty(0) ) {
 					c[0] = dotProduct(a.values(0), b, a.indexes(0), a.pos(0), 0, a.size(0));
 				}
 			}
-			else if( n==1 )            //MATRIX-VECTOR
+			else if( n==1 && cd<=2*1024 ) //MATRIX-VECTOR (short rhs)
 			{
 				for( int i=rl; i<ru; i++ )
 					if( !a.isEmpty(i) )
 						c[i] = dotProduct(a.values(i), b, a.indexes(i), a.pos(i), 0, a.size(i));							
 			}
-			else if( pm2 && m==1 )     //VECTOR-MATRIX
+			else if( n==1 )               //MATRIX-VECTOR (tall rhs)
+			{
+				final int blocksizeI = 32;
+				final int blocksizeK = (int)Math.max(2*1024,2*1024*xsp/32); //~ 16KB L1  
+				int[] curk = new int[blocksizeI];
+				
+				for( int bi = rl; bi < ru; bi+=blocksizeI ) {
+					Arrays.fill(curk, 0); //reset positions
+					for( int bk=0, bimin = Math.min(ru, bi+blocksizeI); bk<cd; bk+=blocksizeK ) {
+						for( int i=bi, bkmin = Math.min(bk+blocksizeK, cd); i<bimin; i++) {
+							if( a.isEmpty(i) ) continue;
+							int apos = a.pos(i);
+							int alen = a.size(i);
+							int[] aix = a.indexes(i);
+							double[] avals = a.values(i);					
+							int k = curk[i-bi] + apos;									
+							for( ; k<apos+alen && aix[k]<bkmin; k++ )
+								c[i] += avals[k] * b[aix[k]];
+							curk[i-bi] = k - apos;
+						}
+					}	
+				}
+			}
+			else if( pm2 && m==1 )        //VECTOR-MATRIX
 			{
 				//parallelization over rows in rhs matrix
 				if( !a.isEmpty(0) ) 
@@ -1291,7 +1244,7 @@ public class LibMatrixMult
 					}
 				}
 			}
-			else if( pm2 && m<=16 )    //MATRIX-MATRIX (short lhs) 
+			else if( pm2 && m<=16 )       //MATRIX-MATRIX (short lhs) 
 			{
 				int arlen = a.numRows();
 				for( int i=0, cix=0; i<arlen; i++, cix+=n )
@@ -1322,7 +1275,27 @@ public class LibMatrixMult
 		    			}
 					}
 			}
-			else                       //MATRIX-MATRIX
+			else if( n<=64 )              //MATRIX-MATRIX (skinny rhs)
+			{
+				//no blocking since b and c fit into cache anyway
+				for( int i=rl, cix=rl*n; i<ru; i++, cix+=n ) {
+					if( a.isEmpty(i) ) 
+						continue;
+					int apos = a.pos(i);
+					int alen = a.size(i);
+					int[] aix = a.indexes(i);
+					double[] avals = a.values(i);					
+					//rest not aligned to blocks of 4 rows
+					int bn = alen%4;
+					for( int k=apos; k<apos+bn; k++ )
+	    				vectMultiplyAdd(avals[k], b, c, aix[k]*n, cix, n); 
+	    			//compute blocks of 4 rows (core inner loop)
+	    			for( int k=apos+bn; k<apos+alen; k+=4 )
+	    				vectMultiplyAdd4( avals[k], avals[k+1], avals[k+2], avals[k+3], b, c, 
+	    					aix[k]*n, aix[k+1]*n, aix[k+2]*n, aix[k+3]*n, cix, n );
+				}	
+			}
+			else                          //MATRIX-MATRIX
 			{							
 				//blocksizes to fit blocks of B (dense) and several rows of A/C in common L2 cache size, 
 				//while blocking A/C for L1/L2 yet allowing long scans (2 pages) in the inner loop over j
@@ -1388,14 +1361,7 @@ public class LibMatrixMult
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultSparseSparse(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean pm2, int rl, int ru) 
 		throws DMLRuntimeException
 	{	
@@ -1504,10 +1470,12 @@ public class LibMatrixMult
 	 * this generic implementation helps to reduce the implementations from (2+1)^2
 	 * to 2^2+1.
 	 * 
-	 * @param m1
-	 * @param m2
-	 * @param ret
-	 * @throws DMLRuntimeException
+	 * @param m1 first matrix
+	 * @param m2 second matrix
+	 * @param ret result matrix
+	 * @param rl row lower bound
+	 * @param ru row upper bound
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	private static void matrixMultUltraSparse(MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, int rl, int ru) 
 		throws DMLRuntimeException 
@@ -1598,16 +1566,6 @@ public class LibMatrixMult
 		//no need to recompute nonzeros because maintained internally
 	}
 
-	/**
-	 * 
-	 * @param mX
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param ct
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
 	private static void matrixMultChainDense(MatrixBlock mX, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, ChainType ct, int rl, int ru) 
 	{
 		double[] a = mX.denseBlock;
@@ -1650,19 +1608,7 @@ public class LibMatrixMult
 			vectMultiplyAdd(val, a, c, aix, 0, cd);				
 		}
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param ct
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
+
 	private static void matrixMultChainSparse(MatrixBlock mX, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, ChainType ct, int rl, int ru) 
 	{
 		SparseBlock a = mX.sparseBlock;
@@ -1710,16 +1656,7 @@ public class LibMatrixMult
 			}
 		}
 	}
-	
 
-	/**
-	 * 
-	 * @param m1
-	 * @param ret
-	 * @param leftTranspose
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
 	private static void matrixMultTransposeSelfDense( MatrixBlock m1, MatrixBlock ret, boolean leftTranspose, int rl, int ru ) 
 		throws DMLRuntimeException
 	{
@@ -1818,24 +1755,23 @@ public class LibMatrixMult
 				
 					//1) Unrolled inner loop, for better ILP
 					//2) Blocked execution, for less cache trashing in parallel exec 
-					//   (smaller block sizes would be slightly better, but consistent as is)
-					//3) Single write in inner loop (transient intermediates)
-					int blocksize = 64;
-					for( int bi = rl; bi<ru; bi+=blocksize )
-						for( int bj = bi; bj<m; bj+=blocksize ) 
-						{
-							final int bimin = Math.min(ru, bi+blocksize);
-							final int bjmin = Math.min(m, bj+blocksize);	
-							
-							for(int i = bi, ix1 = bi*n, ix3 = bi*m; i < bimin; i++, ix1+=n, ix3+=m)
-							{
-								final int bjmax = Math.max(i,bj);
-								for(int j = bjmax, ix2 = bjmax*n; j <bjmin; j++, ix2+=n) //from i due to symmetry
-								{
-									c[ ix3+j ] = dotProduct(a, a, ix1, ix2, n);	
+					//   (we block such that lhs, rhs, and output roughly fit into L2, output in L1)
+					//3) Asymmetric block sizes and exploitation of result symmetry
+					int blocksizeK = 1024; //two memory pages for sufficiently long scans
+					int blocksizeIJ = L2_CACHESIZE / 8 / blocksizeK / 2 - 1; //15
+				
+					//blocked execution over IKJ (lhs/rhs in L2, output in L1)
+					for( int bi = rl; bi<ru; bi+=blocksizeIJ ) 
+						for( int bk = 0, bimin = Math.min(ru, bi+blocksizeIJ); bk<n; bk+=blocksizeK )
+							for( int bj = bi, bklen = Math.min(blocksizeK, n-bk); bj<m; bj+=blocksizeIJ ) {
+								//core tsmm block operation (15x15 vectors of length 1K elements)
+								int bjmin = Math.min(m, bj+blocksizeIJ);	
+								for(int i=bi, ix1=bi*n+bk, ix3=bi*m; i<bimin; i++, ix1+=n, ix3+=m) {
+									final int bjmax = Math.max(i,bj); //from i due to symmetry
+									for(int j=bjmax, ix2=bjmax*n+bk; j <bjmin; j++, ix2+=n) 
+										c[ ix3+j ] += dotProduct(a, a, ix1, ix2, bklen);	
 								}
 							}
-						}
 				}
 			}
 			else
@@ -1851,14 +1787,7 @@ public class LibMatrixMult
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param out
-	 * @param leftTranspose
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
+
 	private static void matrixMultTransposeSelfSparse( MatrixBlock m1, MatrixBlock ret, boolean leftTranspose, int rl, int ru ) 
 		throws DMLRuntimeException
 	{
@@ -1984,17 +1913,7 @@ public class LibMatrixMult
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param pm1
-	 * @param m2
-	 * @param ret1
-	 * @param ret2
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultPermuteDense(MatrixBlock pm1, MatrixBlock m2, MatrixBlock ret1, MatrixBlock ret2, int rl, int ru) 
 		throws DMLRuntimeException
 	{
@@ -2031,15 +1950,6 @@ public class LibMatrixMult
 		}
 	}
 
-	/**
-	 * 
-	 * @param pm1
-	 * @param m2
-	 * @param ret1
-	 * @param ret2
-	 * @param rl
-	 * @param ru
-	 */
 	private static void matrixMultPermuteDenseSparse( MatrixBlock pm1, MatrixBlock m2, MatrixBlock ret1, MatrixBlock ret2, int rl, int ru)
 	{
 		double[] a = pm1.denseBlock;
@@ -2076,16 +1986,7 @@ public class LibMatrixMult
 		}
 		
 	}
-	
-	/**
-	 * 
-	 * @param pm1
-	 * @param m2
-	 * @param ret1
-	 * @param ret2
-	 * @param rl
-	 * @param ru
-	 */
+
 	private static void matrixMultPermuteSparse( MatrixBlock pm1, MatrixBlock m2, MatrixBlock ret1, MatrixBlock ret2, int rl, int ru)
 	{
 		double[] a = pm1.denseBlock;
@@ -2119,18 +2020,7 @@ public class LibMatrixMult
 		}
 
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 */
+
 	private static void matrixMultWSLossDense(MatrixBlock mX, MatrixBlock mU, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, WeightsType wt, int rl, int ru)
 	{
 		double[] x = mX.denseBlock;
@@ -2203,18 +2093,7 @@ public class LibMatrixMult
 		
 		ret.quickSetValue(0, 0, wsloss);
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 */
+
 	private static void matrixMultWSLossSparseDense(MatrixBlock mX, MatrixBlock mU, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, WeightsType wt, int rl, int ru)
 	{
 		SparseBlock x = mX.sparseBlock;
@@ -2343,17 +2222,6 @@ public class LibMatrixMult
 		ret.quickSetValue(0, 0, wsloss);
 	}
 
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 */
 	private static void matrixMultWSLossGeneric (MatrixBlock mX, MatrixBlock mU, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, WeightsType wt, int rl, int ru)
 	{
 		final int n = mX.clen; 
@@ -2457,17 +2325,6 @@ public class LibMatrixMult
 		ret.quickSetValue(0, 0, wsloss);
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException
-	 */
 	private static void matrixMultWSigmoidDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WSigmoidType wt, int rl, int ru) 
 		throws DMLRuntimeException 
 	{	
@@ -2505,19 +2362,7 @@ public class LibMatrixMult
 					}
 			}
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultWSigmoidSparseDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WSigmoidType wt, int rl, int ru) 
 		throws DMLRuntimeException
 	{
@@ -2546,18 +2391,6 @@ public class LibMatrixMult
 			}
 	}
 
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
 	private static void matrixMultWSigmoidGeneric (MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WSigmoidType wt, int rl, int ru) 
 		throws DMLRuntimeException
 	{
@@ -2603,18 +2436,7 @@ public class LibMatrixMult
 				}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException
-	 */
+
 	private static void matrixMultWDivMMDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock mX, MatrixBlock ret, WDivMMType wt, int rl, int ru, int cl, int cu) 
 		throws DMLRuntimeException 
 	{	
@@ -2662,19 +2484,7 @@ public class LibMatrixMult
 						}
 			}
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultWDivMMSparseDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock mX, MatrixBlock ret, WDivMMType wt, int rl, int ru, int cl, int cu) 
 		throws DMLRuntimeException
 	{
@@ -2695,14 +2505,18 @@ public class LibMatrixMult
 		
 		//approach: iterate over non-zeros of w, selective mm computation
 		//blocked over ij, while maintaining front of column indexes, where the
-		//blocksize is chosen such that we reuse each vector on average 8 times.
-		final int blocksizeIJ = (int) (8L*mW.rlen*mW.clen/mW.nonZeros); 
-		int[] curk = new int[blocksizeIJ];		
-		boolean[] aligned = (four&&!scalar) ? new boolean[blocksizeIJ] : null;
+		//blocksize is chosen such that we reuse each  Ui/Vj vector on average 8 times,
+		//with custom blocksizeJ for wdivmm_left to avoid LLC misses on output.
+		final int blocksizeI = (int) (8L*mW.rlen*mW.clen/mW.nonZeros);
+		final int blocksizeJ = left ? Math.max(8,Math.min(L2_CACHESIZE/(mU.clen*8), blocksizeI)) : blocksizeI;
 		
-		for( int bi = rl; bi < ru; bi+=blocksizeIJ ) 
+		int[] curk = new int[blocksizeI];		
+		boolean[] aligned = (four&&!scalar) ? new boolean[blocksizeI] : null;
+		
+		//blocked execution over row blocks
+		for( int bi=rl; bi<ru; bi+=blocksizeI ) 
 		{
-			int bimin = Math.min(ru, bi+blocksizeIJ);
+			int bimin = Math.min(ru, bi+blocksizeI);
 			//prepare starting indexes for block row
 			for( int i=bi; i<bimin; i++ ) {
 				int k = (cl==0||w.isEmpty(i)) ? 0 : w.posFIndexGTE(i,cl);
@@ -2712,63 +2526,53 @@ public class LibMatrixMult
 			if( four && !scalar )
 				for( int i=bi; i<bimin; i++ )
 					aligned[i-bi] = w.isAligned(i-bi, x);
+			
 			//blocked execution over column blocks
-			for( int bj = cl; bj < cu; bj+=blocksizeIJ ) 
+			for( int bj=cl; bj<cu; bj+=blocksizeJ )  
 			{
-				int bjmin = Math.min(cu, bj+blocksizeIJ);
+				int bjmin = Math.min(cu, bj+blocksizeJ);
+				//core wdivmm block matrix mult
 				for( int i=bi, uix=bi*cd; i<bimin; i++, uix+=cd ) {
-					if( !w.isEmpty(i) ) {
-						int wpos = w.pos(i);
-						int wlen = w.size(i);
-						int[] wix = w.indexes(i);
-						double[] wval = w.values(i);				
-						
-						int k = wpos + curk[i-bi];
-						if( basic ) {
-							for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
-								ret.appendValue( i, wix[k], wval[k] * dotProduct(u, v, uix, wix[k]*cd, cd));
-						}
-						else if( four ) { //left/right
-							//checking alignment per row is ok because early abort if false, 
-							//row nnz likely fit in L1/L2 cache, and asymptotically better if aligned
-							if( !scalar && w.isAligned(i, x) ) {
-								//O(n) where n is nnz in w/x 
-								double[] xvals = x.values(i);
-								for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
-									wdivmm(wval[k], xvals[k], u, v, c, uix, wix[k]*cd, left, scalar, cd);
-							}
-							else {
-								//scalar or O(n log m) where n/m are nnz in w/x
-								for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
-									if (scalar)
-										wdivmm(wval[k], eps, u, v, c, uix, wix[k]*cd, left, scalar, cd);
-									else
-										wdivmm(wval[k], x.get(i, wix[k]), u, v, c, uix, wix[k]*cd, left, scalar, cd);
-							}
-						}
-						else { //left/right minus default
-							for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
-								wdivmm(wval[k], u, v, c, uix, wix[k]*cd, left, mult, minus, cd);
-						}
-						curk[i-bi] = k - wpos;
+					if( w.isEmpty(i) ) continue;
+					
+					int wpos = w.pos(i);
+					int wlen = w.size(i);
+					int[] wix = w.indexes(i);
+					double[] wval = w.values(i);				
+					
+					int k = wpos + curk[i-bi];
+					if( basic ) {
+						for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
+							ret.appendValue( i, wix[k], wval[k] * dotProduct(u, v, uix, wix[k]*cd, cd));
 					}
+					else if( four ) { //left/right
+						//checking alignment per row is ok because early abort if false, 
+						//row nnz likely fit in L1/L2 cache, and asymptotically better if aligned
+						if( !scalar && w.isAligned(i, x) ) {
+							//O(n) where n is nnz in w/x 
+							double[] xvals = x.values(i);
+							for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
+								wdivmm(wval[k], xvals[k], u, v, c, uix, wix[k]*cd, left, scalar, cd);
+						}
+						else {
+							//scalar or O(n log m) where n/m are nnz in w/x
+							for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
+								if (scalar)
+									wdivmm(wval[k], eps, u, v, c, uix, wix[k]*cd, left, scalar, cd);
+								else
+									wdivmm(wval[k], x.get(i, wix[k]), u, v, c, uix, wix[k]*cd, left, scalar, cd);
+						}
+					}
+					else { //left/right minus default
+						for( ; k<wpos+wlen && wix[k]<bjmin; k++ )
+							wdivmm(wval[k], u, v, c, uix, wix[k]*cd, left, mult, minus, cd);
+					}
+					curk[i-bi] = k - wpos;
 				}
 			}
 		}
 	}
 
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
 	private static void matrixMultWDivMMGeneric(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock mX, MatrixBlock ret, WDivMMType wt, int rl, int ru, int cl, int cu) 
 		throws DMLRuntimeException
 	{
@@ -2834,18 +2638,7 @@ public class LibMatrixMult
 					}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param eps
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 */
+
 	private static void matrixMultWCeMMDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, double eps, MatrixBlock ret, WCeMMType wt, int rl, int ru)
 	{
 		double[] w = mW.denseBlock;
@@ -2878,36 +2671,41 @@ public class LibMatrixMult
 		
 		ret.quickSetValue(0, 0, wceval);
 	}
-	
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param eps
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 */
+
 	private static void matrixMultWCeMMSparseDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, double eps, MatrixBlock ret, WCeMMType wt, int rl, int ru)
 	{
 		SparseBlock w = mW.sparseBlock;
 		double[] u = mU.denseBlock;
 		double[] v = mV.denseBlock;
+		final int n = mW.clen;
 		final int cd = mU.clen;
 		double wceval = 0; 
 		
-		// approach: iterate over all cells of X and 
-		for( int i=rl, uix=rl*cd; i<ru; i++, uix+=cd ) {
-			if( !w.isEmpty(i) ) { 
-				int wpos = w.pos(i);
-				int wlen = w.size(i);
-				int[] wix = w.indexes(i);
-				double[] wval = w.values(i);
-				for( int k=wpos; k<wpos+wlen; k++ ) {
-					double uvij = dotProduct(u, v, uix, wix[k]*cd, cd);
-					wceval += wval[k] * FastMath.log(uvij + eps);					
+		// approach: iterate over W, point-wise in order to exploit sparsity
+		// blocked over ij, while maintaining front of column indexes, where the
+		// blocksize is chosen such that we reuse each vector on average 8 times.
+		final int blocksizeIJ = (int) (8L*mW.rlen*mW.clen/mW.nonZeros); 
+		int[] curk = new int[blocksizeIJ];			
+		
+		for( int bi=rl; bi<ru; bi+=blocksizeIJ ) {
+			int bimin = Math.min(ru, bi+blocksizeIJ);
+			//prepare starting indexes for block row
+			Arrays.fill(curk, 0); 
+			//blocked execution over column blocks
+			for( int bj=0; bj<n; bj+=blocksizeIJ ) {
+				int bjmin = Math.min(n, bj+blocksizeIJ);
+				for( int i=bi, uix=bi*cd; i<bimin; i++, uix+=cd ) {
+					if( w.isEmpty(i) ) continue;
+					int wpos = w.pos(i);
+					int wlen = w.size(i);
+					int[] wix = w.indexes(i);
+					double[] wval = w.values(i);
+					int k = wpos + curk[i-bi];
+					for( ; k<wpos+wlen && wix[k]<bjmin; k++ ) {
+						double uvij = dotProduct(u, v, uix, wix[k]*cd, cd);
+						wceval += wval[k] * FastMath.log(uvij + eps);	
+					}
+					curk[i-bi] = k - wpos;
 				}
 			}
 		}
@@ -2915,17 +2713,6 @@ public class LibMatrixMult
 		ret.quickSetValue(0, 0, wceval);
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param eps
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 */
 	private static void matrixMultWCeMMGeneric(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, double eps, MatrixBlock ret, WCeMMType wt, int rl, int ru)
 	{
 		final int n = mW.clen; 
@@ -2967,17 +2754,6 @@ public class LibMatrixMult
 		ret.quickSetValue(0, 0, wceval);
 	}
 
-	/**
-	 * 
-	 * @param mW
-	 * @param mU
-	 * @param mV
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException
-	 */
 	private static void matrixMultWuMMDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WUMMType wt, ValueFunction fn, int rl, int ru) 
 		throws DMLRuntimeException 
 	{	
@@ -3014,19 +2790,7 @@ public class LibMatrixMult
 					}
 			}
 	}
-	
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void matrixMultWuMMSparseDense(MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WUMMType wt, ValueFunction fn, int rl, int ru) 
 		throws DMLRuntimeException
 	{
@@ -3054,18 +2818,6 @@ public class LibMatrixMult
 			}
 	}
 
-	/**
-	 * 
-	 * @param mX
-	 * @param mU
-	 * @param mV
-	 * @param mW
-	 * @param ret
-	 * @param wt
-	 * @param rl
-	 * @param ru
-	 * @throws DMLRuntimeException 
-	 */
 	private static void matrixMultWuMMGeneric (MatrixBlock mW, MatrixBlock mU, MatrixBlock mV, MatrixBlock ret, WUMMType wt, ValueFunction fn, int rl, int ru) 
 		throws DMLRuntimeException
 	{
@@ -3120,10 +2872,10 @@ public class LibMatrixMult
 	 * 10^7 values) showed that this generic function provides equivalent performance
 	 * even for the specific case of dotProduct(a,a,len) as used for TSMM.  
 	 * 
-	 * @param a
-	 * @param b
-	 * @param len
-	 * @return
+	 * @param a first vector
+	 * @param b second vector
+	 * @param len length
+	 * @return dot product of the two input vectors
 	 */
 	private static double dotProduct( double[] a, double[] b, final int len )
 	{
@@ -3152,17 +2904,9 @@ public class LibMatrixMult
 		//scalar result
 		return val; 
 	}
-	
-	/**
-	 * 
-	 * @param a
-	 * @param b
-	 * @param ai
-	 * @param bi
-	 * @param len
-	 * @return
-	 */
-	private static double dotProduct( double[] a, double[] b, int ai, int bi, final int len )
+
+	//note: public for use by codegen for consistency
+	public static double dotProduct( double[] a, double[] b, int ai, int bi, final int len )
 	{
 		double val = 0;
 		final int bn = len%8;
@@ -3190,7 +2934,8 @@ public class LibMatrixMult
 		return val; 
 	}
 	
-	private static double dotProduct( double[] a, double[] b, int[] aix, int ai, final int bi, final int len )
+	//note: public for use by codegen for consistency
+	public static double dotProduct( double[] a, double[] b, int[] aix, int ai, final int bi, final int len )
 	{
 		double val = 0;
 		final int bn = len%8;
@@ -3218,17 +2963,9 @@ public class LibMatrixMult
 		//scalar result
 		return val; 
 	}
-	
-	/**
-	 * 
-	 * @param aval
-	 * @param b
-	 * @param c
-	 * @param bi
-	 * @param ci
-	 * @param len
-	 */
-	private static void vectMultiplyAdd( final double aval, double[] b, double[] c, int bi, int ci, final int len )
+
+	//note: public for use by codegen for consistency
+	public static void vectMultiplyAdd( final double aval, double[] b, double[] c, int bi, int ci, final int len )
 	{
 		final int bn = len%8;
 		
@@ -3252,18 +2989,7 @@ public class LibMatrixMult
 			c[ ci+7 ] += aval * b[ bi+7 ];
 		}
 	}
-	
-	/**
-	 * 
-	 * @param aval1
-	 * @param aval2
-	 * @param b
-	 * @param c
-	 * @param bi
-	 * @param bi2
-	 * @param ci
-	 * @param len
-	 */
+
     private static void vectMultiplyAdd2( final double aval1, final double aval2, double[] b, double[] c, int bi1, int bi2, int ci, final int len )
 	{
 		final int bn = len%8;	
@@ -3288,20 +3014,7 @@ public class LibMatrixMult
 			c[ ci+7 ] += aval1 * b[ bi1+7 ] + aval2 * b[ bi2+7 ];	
 		}
 	}
-	
-    /**
-     * 
-     * @param aval1
-     * @param aval2
-     * @param aval3
-     * @param b
-     * @param c
-     * @param bi1
-     * @param bi2
-     * @param bi3
-     * @param ci
-     * @param len
-     */
+
 	private static void vectMultiplyAdd3( final double aval1, final double aval2, final double aval3, double[] b, double[] c, int bi1, int bi2, int bi3, int ci, final int len )
 	{
 		final int bn = len%8;	
@@ -3326,22 +3039,7 @@ public class LibMatrixMult
 			c[ ci+7 ] += aval1 * b[ bi1+7 ] + aval2 * b[ bi2+7 ] + aval3 * b[ bi3+7 ];	
 		}
 	}
-	
-	/**
-	 * 
-	 * @param aval1
-	 * @param aval2
-	 * @param aval3
-	 * @param aval4
-	 * @param b
-	 * @param c
-	 * @param bi1
-	 * @param bi2
-	 * @param bi3
-	 * @param bi4
-	 * @param ci
-	 * @param len
-	 */
+
 	private static void vectMultiplyAdd4( final double aval1, final double aval2, final double aval3, final double aval4, double[] b, double[] c, int bi1, int bi2, int bi3, int bi4, int ci, final int len )
 	{
 		final int bn = len%8;	
@@ -3366,16 +3064,7 @@ public class LibMatrixMult
 			c[ ci+7 ] += aval1 * b[ bi1+7 ] + aval2 * b[ bi2+7 ] + aval3 * b[ bi3+7 ] + aval4 * b[ bi4+7 ];	
 		}
 	}
-	
-	/**
-	 * 
-	 * @param aval
-	 * @param b
-	 * @param c
-	 * @param bix
-	 * @param ci
-	 * @param len
-	 */
+
 	@SuppressWarnings("unused")
 	private static void vectMultiplyAdd( final double aval, double[] b, double[] c, int[] bix, final int ci, final int len )
 	{
@@ -3402,18 +3091,9 @@ public class LibMatrixMult
 			c[ ci+bix[j+7] ] += aval * b[ j+7 ];
 		}
 	}
-	
-	/**
-	 * 
-	 * @param aval
-	 * @param b
-	 * @param c
-	 * @param bix
-	 * @param bi
-	 * @param ci
-	 * @param len
-	 */
-	private static void vectMultiplyAdd( final double aval, double[] b, double[] c, int[] bix, final int bi, final int ci, final int len )
+
+	//note: public for use by codegen for consistency
+	public static void vectMultiplyAdd( final double aval, double[] b, double[] c, int[] bix, final int bi, final int ci, final int len )
 	{
 		final int bn = len%8;
 		
@@ -3438,17 +3118,9 @@ public class LibMatrixMult
 			c[ ci+bix[j+7] ] += aval * b[ j+7 ];
 		}
 	}
-		
-	/**
-	 * 
-	 * @param aval
-	 * @param b
-	 * @param c
-	 * @param bi
-	 * @param ci
-	 * @param len
-	 */
-	private static void vectMultiplyWrite( final double aval, double[] b, double[] c, int bi, int ci, final int len )
+
+	//note: public for use by codegen for consistency
+	public static void vectMultiplyWrite( final double aval, double[] b, double[] c, int bi, int ci, final int len )
 	{
 		final int bn = len%8;
 		
@@ -3472,17 +3144,7 @@ public class LibMatrixMult
 			c[ ci+7 ] = aval * b[ bi+7 ];
 		}
 	}
-	
-	/**
-	 * 
-	 * @param a
-	 * @param b
-	 * @param c
-	 * @param ai
-	 * @param bi
-	 * @param ci
-	 * @param len
-	 */
+
 	@SuppressWarnings("unused")
 	private static void vectMultiplyWrite( double[] a, double[] b, double[] c, int ai, int bi, int ci, final int len )
 	{
@@ -3509,14 +3171,6 @@ public class LibMatrixMult
 		}
 	}
 
-	/**
-	 * 
-	 * @param a
-	 * @param c
-	 * @param ai
-	 * @param ci
-	 * @param len
-	 */
 	private static void vectMultiply( double[] a, double[] c, int ai, int ci, final int len )
 	{
 		final int bn = len%8;
@@ -3541,16 +3195,9 @@ public class LibMatrixMult
 			c[ ci+7 ] *= a[ ai+7 ];
 		}
 	}
-	
-	/**
-	 * 
-	 * @param a
-	 * @param c
-	 * @param ai
-	 * @param ci
-	 * @param len
-	 */
-	private static void vectAdd( double[] a, double[] c, int ai, int ci, final int len )
+
+	//note: public for use by codegen for consistency
+	public static void vectAdd( double[] a, double[] c, int ai, int ci, final int len )
 	{
 		final int bn = len%8;
 		
@@ -3574,18 +3221,7 @@ public class LibMatrixMult
 			c[ ci+7 ] += a[ ai+7 ];
 		}
 	}
-	
-	/**
-	 * 
-	 * @param a1
-	 * @param a2
-	 * @param a3
-	 * @param a4
-	 * @param c
-	 * @param ai
-	 * @param ci
-	 * @param len
-	 */
+
 	private static void vectAdd4( double[] a1, double[] a2, double[] a3, double[] a4, double[] c, int ai, int ci, final int len )
 	{
 		final int bn = len%8;
@@ -3610,15 +3246,7 @@ public class LibMatrixMult
 			c[ ci+7 ] += a1[ ai+7 ] + a2[ ai+7 ] + a3[ ai+7 ] + a4[ ai+7 ];
 		}
 	}
-	
-	/**
-	 * 
-	 * @param a
-	 * @param c
-	 * @param ai
-	 * @param ci
-	 * @param len
-	 */
+
 	private static void vectSubtract( double[] a, double[] c, int ai, int ci, final int len )
 	{
 		final int bn = len%8;
@@ -3644,18 +3272,6 @@ public class LibMatrixMult
 		}
 	}
 
-	/**
-	 * 
-	 * @param wij
-	 * @param u
-	 * @param v
-	 * @param uix
-	 * @param vix
-	 * @param flagminus
-	 * @param flaglog
-	 * @param len
-	 * @return
-	 */
 	private static double wsigmoid( final double wij, double[] u, double[] v, final int uix, final int vix, final boolean flagminus, final boolean flaglog, final int len )
 	{
 		//compute dot product over ui vj 
@@ -3669,19 +3285,7 @@ public class LibMatrixMult
 		//compute weighted output
 		return wij * ((flaglog) ? FastMath.log(cval) : cval);
 	}
-	
-	/**
-	 * 
-	 * @param wij
-	 * @param u
-	 * @param v
-	 * @param uix
-	 * @param vix
-	 * @param flagminus
-	 * @param flaglog
-	 * @param len
-	 * @return
-	 */
+
 	private static double wsigmoid( final double wij, MatrixBlock u, MatrixBlock v, final int uix, final int vix, final boolean flagminus, final boolean flaglog, final int len )
 	{
 		//compute dot product over ui vj 
@@ -3695,18 +3299,7 @@ public class LibMatrixMult
 		//compute weighted output
 		return wij * ((flaglog) ? FastMath.log(cval) : cval);
 	}
-	
-	/**
-	 * 
-	 * @param wij
-	 * @param u
-	 * @param v
-	 * @param c
-	 * @param uix
-	 * @param vix
-	 * @param flagleft
-	 * @param len
-	 */
+
 	private static void wdivmm( final double wij, double[] u, double[] v, double[] c, final int uix, final int vix, final boolean left, final boolean mult, final boolean minus, final int len )
 	{
 		//compute dot product over ui vj 
@@ -3724,19 +3317,7 @@ public class LibMatrixMult
 		//compute final mm output
 		vectMultiplyAdd(tmpval, b, c, bix, cix, len);
 	}
-	
-	/**
-	 * 
-	 * @param wij
-	 * @param xij
-	 * @param u
-	 * @param v
-	 * @param c
-	 * @param uix
-	 * @param vix
-	 * @param left
-	 * @param len
-	 */
+
 	private static void wdivmm( final double wij, final double xij, double[] u, double[] v, double[] c, final int uix, final int vix, final boolean left, final boolean scalar, final int len )
 	{
 		//compute dot product over ui vj 
@@ -3754,18 +3335,6 @@ public class LibMatrixMult
 		vectMultiplyAdd(tmpval, b, c, bix, cix, len);
 	}
 
-
-	/**
-	 * 
-	 * @param wij
-	 * @param u
-	 * @param v
-	 * @param c
-	 * @param uix
-	 * @param vix
-	 * @param flagleft
-	 * @param len
-	 */
 	private static void wdivmm( final double wij, MatrixBlock u, MatrixBlock v, double[] c, final int uix, final int vix, final boolean left, boolean mult, final boolean minus, final int len )
 	{
 		//compute dot product over ui vj 
@@ -3784,19 +3353,7 @@ public class LibMatrixMult
 		for( int k2=0; k2<len; k2++ )
 			c[cix+k2] += b.quickGetValue(bix, k2) * wtmp;
 	}
-	
-	/**
-	 * 
-	 * @param wij
-	 * @param xij
-	 * @param u
-	 * @param v
-	 * @param c
-	 * @param uix
-	 * @param vix
-	 * @param left
-	 * @param len
-	 */
+
 	private static void wdivmm( final double wij, final double xij, MatrixBlock u, MatrixBlock v, double[] c, final int uix, final int vix, final boolean left, final boolean scalar, final int len )
 	{
 		//compute dot product over ui vj 
@@ -3814,20 +3371,7 @@ public class LibMatrixMult
 		for( int k2=0; k2<len; k2++ )
 			c[cix+k2] += b.quickGetValue(bix, k2) * wtmp;
 	}
-	
-	/**
-	 * 
-	 * @param wij
-	 * @param u
-	 * @param v
-	 * @param uix
-	 * @param vix
-	 * @param flagmult
-	 * @param fn
-	 * @param len
-	 * @return
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static double wumm( final double wij, double[] u, double[] v, final int uix, final int vix, final boolean flagmult, ValueFunction fn, final int len ) 
 		throws DMLRuntimeException
 	{
@@ -3840,20 +3384,7 @@ public class LibMatrixMult
 		//compute weighted output
 		return flagmult ? wij * cval : wij / cval;
 	}
-	
-	/**
-	 * 
-	 * @param wij
-	 * @param u
-	 * @param v
-	 * @param uix
-	 * @param vix
-	 * @param flagminus
-	 * @param flaglog
-	 * @param len
-	 * @return
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static double wumm( final double wij, MatrixBlock u, MatrixBlock v, final int uix, final int vix, final boolean flagmult, ValueFunction fn, final int len ) 
 		throws DMLRuntimeException
 	{
@@ -3866,16 +3397,7 @@ public class LibMatrixMult
 		//compute weighted output
 		return flagmult ? wij * cval : wij / cval;
 	}
-	
-	/**
-	 * 
-	 * @param a
-	 * @param b
-	 * @param ai
-	 * @param bi
-	 * @param len
-	 * @return
-	 */
+
 	private static double dotProductGeneric(MatrixBlock a, MatrixBlock b, final int ai, final int bi, int len)
 	{
 		double val = 0;
@@ -3890,7 +3412,7 @@ public class LibMatrixMult
 	 * Hence, we compute only the upper triangular matrix and copy this partial
 	 * result down to lower triangular matrix once.
 	 * 
-	 * @param ret
+	 * @param ret matrix
 	 */
 	private static void copyUpperToLowerTriangle( MatrixBlock ret )
 	{
@@ -3903,14 +3425,7 @@ public class LibMatrixMult
 			for( int j=i+1, lix=j*n+i; j<n; j++, lix+=n )
 				c[ lix ] = c[ uix+j ];
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param leftTranspose
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	private static MatrixBlock prepMatrixMultTransposeSelfInput( MatrixBlock m1, boolean leftTranspose ) 
 		throws DMLRuntimeException
 	{
@@ -3926,41 +3441,30 @@ public class LibMatrixMult
 		
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @return
-	 */
+
 	private static boolean checkPrepMatrixMultRightInput( MatrixBlock m1, MatrixBlock m2 )
 	{
 		//transpose if dense-dense, skinny rhs matrix (not vector), and memory guarded by output 
-		return (!m1.sparse && !m2.sparse && m1.rlen>m2.clen && m2.rlen > 64 && m2.clen > 1 && m2.clen < 64);
+		return (LOW_LEVEL_OPTIMIZATION && !m1.sparse && !m2.sparse 
+				&& m1.rlen > m2.clen && m2.rlen > 64 && m2.clen > 1 && m2.clen < 64
+				&& 8*m2.rlen*m2.clen < 256*1024 ); //rhs fits in L2 cache
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @return
-	 */
-	private static boolean checkParMatrixMultRightInput( MatrixBlock m1, MatrixBlock m2, int k )
-	{
+
+	private static boolean checkParMatrixMultRightInputRows( MatrixBlock m1, MatrixBlock m2, int k ) {
 		//parallelize over rows in rhs matrix if number of rows in lhs/output is very small
 		return (m1.rlen==1 && LOW_LEVEL_OPTIMIZATION && m2.clen>1 && !(m1.isUltraSparse()||m2.isUltraSparse()))
 			|| (m1.rlen<=16 && LOW_LEVEL_OPTIMIZATION && m2.clen>1 && m2.rlen > m1.rlen 
 			   && ( !m1.isUltraSparse() && !m2.sparse ) //dense-dense / sparse/dense
 			   && (long)k * 8 * m1.rlen * m2.clen < MEM_OVERHEAD_THRESHOLD ); 
 	}
-	
-	/**
-	 * 
-	 * @param m1
-	 * @param m2
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
+	private static boolean checkParMatrixMultRightInputCols( MatrixBlock m1, MatrixBlock m2, int k, boolean pm2r ) {
+		//parallelize over cols in rhs matrix if dense, number of cols in rhs is large, and lhs fits in l2
+		return (LOW_LEVEL_OPTIMIZATION && !m1.sparse && !m2.sparse 
+				&& m2.clen > k * 1024 && m1.rlen < k * 32 && !pm2r
+				&& 8*m1.rlen*m1.clen < 256*1024 ); //lhs fits in L2 cache
+	}
+
 	private static MatrixBlock prepMatrixMultRightInput( MatrixBlock m1, MatrixBlock m2 ) 
 		throws DMLRuntimeException
 	{
@@ -3976,18 +3480,6 @@ public class LibMatrixMult
 		return ret;
 	}
 
-	/**
-	 * 
-	 * @param a
-	 * @param aixi
-	 * @param bk
-	 * @param bj
-	 * @param n
-	 * @param tmpa
-	 * @param tmpbi
-	 * @param bklen
-	 * @return
-	 */
 	private static int copyNonZeroElements( double[] a, final int aixi, final int bk, final int bj, final int n, double[] tmpa, int[] tmpbi, final int bklen )
 	{
 		int knnz = 0;
@@ -4000,20 +3492,7 @@ public class LibMatrixMult
 		
 		return knnz;
 	}
-	
-	/**
-	 * 
-	 * @param a
-	 * @param aixi
-	 * @param bk
-	 * @param bj
-	 * @param n
-	 * @param nx
-	 * @param tmpa
-	 * @param tmpbi
-	 * @param bklen
-	 * @return
-	 */
+
 	private static int copyNonZeroElements( double[] a, int aixi, final int bk, final int bj, final int n, final int nx, double[] tmpa, int[] tmpbi, final int bklen )
 	{
 		int knnz = 0;
@@ -4027,13 +3506,6 @@ public class LibMatrixMult
 		return knnz;
 	}
 
-	/**
-	 * 
-	 * @param tasks
-	 * @param ret
-	 * @throws ExecutionException 
-	 * @throws InterruptedException 
-	 */
 	private static void sumScalarResults(List<Future<Double>> tasks, MatrixBlock ret) 
 		throws InterruptedException, ExecutionException
 	{
@@ -4043,12 +3515,7 @@ public class LibMatrixMult
 			val += task.get();
 		ret.quickSetValue(0, 0, val);
 	}
-	
-	/**
-	 * 
-	 * @param partret
-	 * @param ret
-	 */
+
 	@SuppressWarnings("unused")
 	private static void sumDenseResults( double[][] partret, double[] ret )
 	{
@@ -4069,35 +3536,47 @@ public class LibMatrixMult
 		}
 		
 	}
+
+	private static ArrayList<Integer> getBalancedBlockSizes(int len, int k) {
+		ArrayList<Integer> ret = new ArrayList<Integer>();
+		int base = len / k;
+		int rest = len % k;
+		for( int i=0; i<k; i++ ) {
+			int val = base + (i<rest?1:0);
+			if( val > 0 )
+				ret.add(val);
+		}	
+		return ret; 
+	}
 	
 	/////////////////////////////////////////////////////////
 	// Task Implementations for Multi-Threaded Operations  //
 	/////////////////////////////////////////////////////////
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class MatrixMultTask implements Callable<Object> 
 	{
 		private MatrixBlock _m1  = null;
 		private MatrixBlock _m2  = null;
 		private MatrixBlock _ret = null;
 		private boolean _tm2 = false; //transposed m2
-		private boolean _pm2 = false; //par over m2
+		private boolean _pm2r = false; //par over m2 rows
+		private boolean _pm2c = false; //par over m2 rows
+		
 		private int _rl = -1;
 		private int _ru = -1;
 
-		protected MatrixMultTask( MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, boolean tm2, boolean pm2, int rl, int ru )
+		protected MatrixMultTask( MatrixBlock m1, MatrixBlock m2, MatrixBlock ret, 
+				boolean tm2, boolean pm2r, boolean pm2c, int rl, int ru )
 		{
 			_m1 = m1;
 			_m2 = m2;
 			_tm2 = tm2;
-			_pm2 = pm2;
+			_pm2r = pm2r;
+			_pm2c = pm2c;
 			_rl = rl;
 			_ru = ru;
 			
-			if( pm2 ) { //vector-matrix / matrix-matrix
+			if( pm2r ) { //vector-matrix / matrix-matrix
 				//allocate local result for partial aggregation
 				_ret = new MatrixBlock(ret.rlen, ret.clen, false);
 			}
@@ -4109,45 +3588,46 @@ public class LibMatrixMult
 		@Override
 		public Object call() throws DMLRuntimeException
 		{
+			//setup target index ranges
+			int rl = _pm2c ? 0 : _rl;
+			int ru = _pm2c ? _m1.rlen : _ru;
+			int cl = _pm2c ? _rl : 0;
+			int cu = _pm2c ? _ru : _ret.clen;
+			
 			//thread-local allocation
-			if( _pm2 )
+			if( _pm2r )
 				_ret.allocateDenseBlock();
 			
 			//compute block matrix multiplication
 			if( _m1.isUltraSparse() || _m2.isUltraSparse() )
-				matrixMultUltraSparse(_m1, _m2, _ret, _rl, _ru);
+				matrixMultUltraSparse(_m1, _m2, _ret, rl, ru);
 			else if(!_m1.sparse && !_m2.sparse)
-				matrixMultDenseDense(_m1, _m2, _ret, _tm2, _pm2, _rl, _ru);
+				matrixMultDenseDense(_m1, _m2, _ret, _tm2, _pm2r, rl, ru, cl, cu);
 			else if(_m1.sparse && _m2.sparse)
-				matrixMultSparseSparse(_m1, _m2, _ret, _pm2, _rl, _ru);
+				matrixMultSparseSparse(_m1, _m2, _ret, _pm2r, rl, ru);
 			else if(_m1.sparse)
-				matrixMultSparseDense(_m1, _m2, _ret, _pm2, _rl, _ru);
+				matrixMultSparseDense(_m1, _m2, _ret, _pm2r, rl, ru);
 			else
-				matrixMultDenseSparse(_m1, _m2, _ret, _pm2, _rl, _ru);
+				matrixMultDenseSparse(_m1, _m2, _ret, _pm2r, rl, ru);
 			
 			//maintain block nnz (upper bounds inclusive)
-			if( !_pm2 )
-				return _ret.recomputeNonZeros(_rl, _ru-1, 0, _ret.getNumColumns()-1);
+			if( !_pm2r )
+				return _ret.recomputeNonZeros(rl, ru-1, cl, cu-1);
 			else
 				return _ret.getDenseBlock();
 		}
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class MatrixMultChainTask implements Callable<double[]> 
 	{
 		private MatrixBlock _m1  = null;
 		private MatrixBlock _m2  = null;
 		private MatrixBlock _m3  = null;
-		private MatrixBlock _ret = null;
 		private ChainType _ct = null;
 		private int _rl = -1;
 		private int _ru = -1;
 
-		protected MatrixMultChainTask( MatrixBlock mX, MatrixBlock mV, MatrixBlock mW, MatrixBlock ret, ChainType ct, int rl, int ru ) 
+		protected MatrixMultChainTask( MatrixBlock mX, MatrixBlock mV, MatrixBlock mW, ChainType ct, int rl, int ru ) 
 			throws DMLRuntimeException
 		{
 			_m1 = mX;
@@ -4156,35 +3636,35 @@ public class LibMatrixMult
 			_ct = ct;
 			_rl = rl;
 			_ru = ru;
-			
-			//allocate local result for partial aggregation
-			_ret = new MatrixBlock(ret.rlen, ret.clen, false);
-			_ret.allocateDenseBlock();
 		}
 		
 		@Override
 		public double[] call() throws DMLRuntimeException
 		{
+			//thread-local allocation for partial aggregation
+			MatrixBlock ret = new MatrixBlock(1, _m1.clen, false);
+			ret.allocateDenseBlock();
+			
 			if( _m1.sparse )
-				matrixMultChainSparse(_m1, _m2, _m3, _ret, _ct, _rl, _ru);
+				matrixMultChainSparse(_m1, _m2, _m3, ret, _ct, _rl, _ru);
 			else
-				matrixMultChainDense(_m1, _m2, _m3, _ret, _ct, _rl, _ru);
+				matrixMultChainDense(_m1, _m2, _m3, ret, _ct, _rl, _ru);
 			
 			//NOTE: we dont do global aggregation from concurrent tasks in order
 			//to prevent synchronization (sequential aggregation led to better 
 			//performance after JIT)
 			
-			return _ret.getDenseBlock();
+			return ret.getDenseBlock();
 		}
 	}
 
 	private static class MatrixMultTransposeTask implements Callable<Object> 
 	{
-		private MatrixBlock _m1  = null;
-		private MatrixBlock _ret = null;
-		private boolean _left = true;
-		private int _rl = -1;
-		private int _ru = -1;
+		private final MatrixBlock _m1;
+		private final MatrixBlock _ret;
+		private final boolean _left;
+		private final int _rl;
+		private final int _ru;
 
 		protected MatrixMultTransposeTask( MatrixBlock m1, MatrixBlock ret, boolean left, int rl, int ru )
 		{
@@ -4202,15 +3682,11 @@ public class LibMatrixMult
 				matrixMultTransposeSelfSparse(_m1, _ret, _left, _rl, _ru);
 			else
 				matrixMultTransposeSelfDense(_m1, _ret, _left, _rl, _ru);
-				
+			
 			return null;
 		}
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class MatrixMultPermuteTask implements Callable<Object> 
 	{
 		private MatrixBlock _pm1  = null;
@@ -4243,11 +3719,7 @@ public class LibMatrixMult
 			return null;
 		}
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class MatrixMultWSLossTask implements Callable<Double>
 	{
 		private MatrixBlock _mX = null;
@@ -4292,11 +3764,7 @@ public class LibMatrixMult
 			return _ret.quickGetValue(0, 0);
 		}
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class MatrixMultWSigmoidTask implements Callable<Long> 
 	{
 		private MatrixBlock _mW = null;
@@ -4334,11 +3802,7 @@ public class LibMatrixMult
 			return _ret.recomputeNonZeros(_rl, _ru-1, 0, _ret.getNumColumns()-1);
 		}
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class MatrixMultWDivTask implements Callable<Long> 
 	{
 		private MatrixBlock _mW = null;
@@ -4428,10 +3892,7 @@ public class LibMatrixMult
 			return _ret.quickGetValue(0, 0);
 		}
 	}
-	
-	/**
-	 * 
-	 */
+
 	private static class MatrixMultWuTask implements Callable<Long> 
 	{
 		private MatrixBlock _mW = null;

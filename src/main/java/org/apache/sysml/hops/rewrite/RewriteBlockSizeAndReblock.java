@@ -27,6 +27,7 @@ import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.hops.DataOp;
 import org.apache.sysml.hops.FunctionOp;
 import org.apache.sysml.hops.Hop;
+import org.apache.sysml.hops.OptimizerUtils;
 import org.apache.sysml.hops.Hop.DataOpTypes;
 import org.apache.sysml.hops.Hop.FileFormatTypes;
 import org.apache.sysml.hops.Hop.ParamBuiltinOp;
@@ -78,62 +79,66 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 		return root;
 	}
 
-	private void rule_BlockSizeAndReblock(Hop hop, final int GLOBAL_BLOCKSIZE) 
+	private void rule_BlockSizeAndReblock(Hop hop, final int blocksize) 
 		throws HopsException 
 	{
 		// Go to the source(s) of the DAG
 		for (Hop hi : hop.getInput()) {
-			if (hi.getVisited() != Hop.VisitStatus.DONE)
-				rule_BlockSizeAndReblock(hi, GLOBAL_BLOCKSIZE);
+			if (!hi.isVisited())
+				rule_BlockSizeAndReblock(hi, blocksize);
 		}
 
 		boolean canReblock = isReblockValid();
 		
 		if (hop instanceof DataOp) 
 		{
+			DataOp dop = (DataOp) hop;
+			
 			// if block size does not match
-			if(    canReblock && hop.getDataType() == DataType.MATRIX
-				&& (hop.getRowsInBlock() != GLOBAL_BLOCKSIZE || hop.getColsInBlock() != GLOBAL_BLOCKSIZE) ) 
+			if( canReblock && 
+				( (dop.getDataType() == DataType.MATRIX && (dop.getRowsInBlock() != blocksize || dop.getColsInBlock() != blocksize))
+				||(dop.getDataType() == DataType.FRAME && OptimizerUtils.isSparkExecutionMode() && (dop.getInputFormatType()==FileFormatTypes.TEXT
+						  || dop.getInputFormatType()==FileFormatTypes.CSV && OptimizerUtils.ALLOW_FRAME_CSV_REBLOCK))) ) 
 			{
-				if (((DataOp) hop).getDataOpType() == DataOp.DataOpTypes.PERSISTENTREAD) 
+				if( dop.getDataOpType() == DataOp.DataOpTypes.PERSISTENTREAD) 
 				{
 					// insert reblock after the hop
-					hop.setRequiresReblock(true);
-					hop.setOutputBlocksizes(GLOBAL_BLOCKSIZE, GLOBAL_BLOCKSIZE);
+					dop.setRequiresReblock(true);
+					dop.setOutputBlocksizes(blocksize, blocksize);
 				} 
-				else if (((DataOp) hop).getDataOpType() == DataOp.DataOpTypes.PERSISTENTWRITE) 
+				else if( dop.getDataOpType() == DataOp.DataOpTypes.PERSISTENTWRITE ) 
 				{
-					if (hop.getRowsInBlock() == -1 && hop.getColsInBlock() == -1) 
+					if (dop.getRowsInBlock() == -1 && dop.getColsInBlock() == -1) 
 					{
 						// if this dataop is for cell output, then no reblock is needed 
 						// as (A) all jobtypes can produce block2cell and cell2cell and 
 						// (B) we don't generate an explicit instruction for it (the info 
 						// is conveyed through OutputInfo.
 					} 
-					else if (hop.getInput().get(0).requiresReblock() && hop.getInput().get(0).getParent().size() == 1) 
+					else if (dop.getInput().get(0).requiresReblock() && dop.getInput().get(0).getParent().size() == 1) 
 					{
 						// if a reblock is feeding into this, then use it if this is
 						// the only parent, otherwise new Reblock
-						hop.getInput().get(0).setOutputBlocksizes(hop.getRowsInBlock(),hop.getColsInBlock());
+						dop.getInput().get(0).setOutputBlocksizes(dop.getRowsInBlock(),dop.getColsInBlock());
 					} 
 					else 
 					{
 						// insert reblock after the hop
-						hop.setRequiresReblock(true);
-						hop.setOutputBlocksizes(GLOBAL_BLOCKSIZE, GLOBAL_BLOCKSIZE);
+						dop.setRequiresReblock(true);
+						dop.setOutputBlocksizes(blocksize, blocksize);
 					}
 				} 
-				else if (((DataOp) hop).getDataOpType() == DataOp.DataOpTypes.TRANSIENTWRITE
-						|| ((DataOp) hop).getDataOpType() == DataOp.DataOpTypes.TRANSIENTREAD) {
+				else if (dop.getDataOpType() == DataOp.DataOpTypes.TRANSIENTWRITE
+						|| dop.getDataOpType() == DataOp.DataOpTypes.TRANSIENTREAD) {
 					if ( DMLScript.rtplatform == RUNTIME_PLATFORM.SINGLE_NODE ) {
 						// simply copy the values from its input
-						hop.setRowsInBlock(hop.getInput().get(0).getRowsInBlock());
-						hop.setColsInBlock(hop.getInput().get(0).getColsInBlock());
+						dop.setRowsInBlock(hop.getInput().get(0).getRowsInBlock());
+						dop.setColsInBlock(hop.getInput().get(0).getColsInBlock());
 					}
 					else {
 						// by default, all transient reads and writes are in blocked format
-						hop.setRowsInBlock(GLOBAL_BLOCKSIZE);
-						hop.setColsInBlock(GLOBAL_BLOCKSIZE);
+						dop.setRowsInBlock(blocksize);
+						dop.setColsInBlock(blocksize);
 					}
 
 				} else {
@@ -141,6 +146,7 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 				}
 			}
 		} 
+		//TODO remove once transform rebased to frames
 		else if ( (hop instanceof ParameterizedBuiltinOp && ((ParameterizedBuiltinOp)hop).getOp() == ParamBuiltinOp.TRANSFORM) ) {
 			
 			// check if there exists a non-csv-write output. If yes, add reblock
@@ -158,7 +164,7 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 			if ( rblk )
 			{
 				hop.setRequiresReblock(true);
-				hop.setOutputBlocksizes(GLOBAL_BLOCKSIZE, GLOBAL_BLOCKSIZE);
+				hop.setOutputBlocksizes(blocksize, blocksize);
 			}
 		}
 		else //NO DATAOP 
@@ -185,8 +191,8 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 			 */
 			
 			if ( hop.requiresReblock() ) {
-				hop.setRowsInBlock(GLOBAL_BLOCKSIZE);
-				hop.setColsInBlock(GLOBAL_BLOCKSIZE);
+				hop.setRowsInBlock(blocksize);
+				hop.setColsInBlock(blocksize);
 			}
 			
 			// Constraint C1:
@@ -204,8 +210,8 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 					hop.setColsInBlock(-1);
 				}
 				else {
-					hop.setRowsInBlock(GLOBAL_BLOCKSIZE);
-					hop.setColsInBlock(GLOBAL_BLOCKSIZE);
+					hop.setRowsInBlock(blocksize);
+					hop.setColsInBlock(blocksize);
 					
 					// Functions may return multiple outputs, as defined in array of outputs in FunctionOp.
 					// Reblock properties need to be set for each output.
@@ -213,8 +219,8 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 						FunctionOp fop = (FunctionOp) hop;
 						if ( fop.getOutputs() != null) {
 							for(Hop out : fop.getOutputs()) {
-								out.setRowsInBlock(GLOBAL_BLOCKSIZE);
-								out.setColsInBlock(GLOBAL_BLOCKSIZE);
+								out.setRowsInBlock(blocksize);
+								out.setColsInBlock(blocksize);
 							}
 						}
 					}
@@ -231,13 +237,9 @@ public class RewriteBlockSizeAndReblock extends HopRewriteRule
 			}
 		}
 
-		hop.setVisited(Hop.VisitStatus.DONE);
+		hop.setVisited();
 	}
 	
-	/**
-	 * 
-	 * @return
-	 */
 	private static boolean isReblockValid() {
 		return ( DMLScript.rtplatform != RUNTIME_PLATFORM.SINGLE_NODE);
 	}

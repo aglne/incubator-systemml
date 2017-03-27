@@ -24,7 +24,6 @@ import java.util.ArrayList;
 import org.apache.sysml.lops.Lop;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
 import org.apache.sysml.runtime.matrix.data.OperationsOnMatrixValues;
@@ -45,13 +44,7 @@ public class ScalarInstruction extends UnaryMRInstructionBase
 		//value dependent safe-safeness (trigger re-evaluation sparse-safe)
 		op.setConstant(op.getConstant());
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static ScalarInstruction parseInstruction ( String str )
 		throws DMLRuntimeException 
 	{	
@@ -70,7 +63,7 @@ public class ScalarInstruction extends UnaryMRInstructionBase
 	
 	public void processInstruction(Class<? extends MatrixValue> valueClass, CachedValueMap cachedValues, 
 			IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor)
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		ArrayList<IndexedMatrixValue> blkList = cachedValues.get(input);
 		if( blkList != null )
@@ -95,12 +88,7 @@ public class ScalarInstruction extends UnaryMRInstructionBase
 					cachedValues.add(output, out);
 			}
 	}
-	
-	/**
-	 * 
-	 * @param inst
-	 * @return
-	 */
+
 	private static boolean isFirstArgumentScalar(String inst)
 	{
 		//get first argument

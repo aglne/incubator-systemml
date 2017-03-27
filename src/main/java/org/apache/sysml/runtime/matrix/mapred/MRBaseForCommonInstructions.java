@@ -29,9 +29,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MapReduceBase;
 import org.apache.hadoop.mapred.Reporter;
-
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.ParForProgramBlock.PDataPartitionFormat;
 import org.apache.sysml.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
 import org.apache.sysml.runtime.instructions.Instruction;
@@ -51,6 +49,8 @@ import org.apache.sysml.runtime.instructions.mr.ReorgInstruction;
 import org.apache.sysml.runtime.instructions.mr.UnaryMRInstructionBase;
 import org.apache.sysml.runtime.instructions.mr.ZeroOutInstruction;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
+import org.apache.sysml.runtime.matrix.data.MatrixBlock;
+import org.apache.sysml.runtime.matrix.data.MatrixCell;
 import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
 
@@ -105,20 +105,7 @@ public class MRBaseForCommonInstructions extends MapReduceBase
 				dimensions.put(index, MRJobConfiguration.getIntermediateMatrixCharactristics(job, index));			
 		}
 	}
-	
-	/**
-	 * 
-	 * @param indexes
-	 * @param value
-	 * @param i
-	 * @param reporter
-	 * @param collectFinalMultipleOutputs
-	 * @param resultDimsUnknown
-	 * @param resultsNonZeros
-	 * @param resultsMaxRowDims
-	 * @param resultsMaxColDims
-	 * @throws IOException
-	 */
+
 	protected void collectOutput_N_Increase_Counter(MatrixIndexes indexes, MatrixValue value, 
 			int i, Reporter reporter, CollectMultipleConvertedOutputs collectFinalMultipleOutputs, 
 			byte[] resultDimsUnknown, long[] resultsNonZeros, long[] resultsMaxRowDims, 
@@ -132,14 +119,8 @@ public class MRBaseForCommonInstructions extends MapReduceBase
 			// compute dimensions for the resulting matrix
 			
 			// find the maximum row index and column index encountered in current output block/cell 
-			long maxrow=0, maxcol=0;
-		
-			try {
-				maxrow = value.getMaxRow();
-				maxcol = value.getMaxColumn();
-			} catch (DMLRuntimeException e) {
-				throw new IOException(e);
-			}
+			long maxrow = getMaxDimension(indexes, value, true);
+			long maxcol = getMaxDimension(indexes, value, false);
 			
 			if ( maxrow > resultsMaxRowDims[i] )
 				resultsMaxRowDims[i] = maxrow;
@@ -157,33 +138,17 @@ public class MRBaseForCommonInstructions extends MapReduceBase
 		}
 	}
 
-	/**
-	 * 
-	 * @param mixed_instructions
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
 	protected void processMixedInstructions(ArrayList<MRInstruction> mixed_instructions) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		if( mixed_instructions != null )
 			for( MRInstruction ins : mixed_instructions )
 				processOneInstruction(ins, valueClass, cachedValues, tempValue, zeroInput);
 	}
-	
-	/**
-	 * 
-	 * @param ins
-	 * @param valueClass
-	 * @param cachedValues
-	 * @param tempValue
-	 * @param zeroInput
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
+
 	protected void processOneInstruction(MRInstruction ins, Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		//Timing time = new Timing(true);
 		
@@ -289,11 +254,6 @@ public class MRBaseForCommonInstructions extends MapReduceBase
 		dcValues.clear();
 	}
 
-	/**
-	 * 
-	 * @param job
-	 * @throws IOException
-	 */
 	protected void setupDistCacheFiles(JobConf job) 
 		throws IOException 
 	{
@@ -335,5 +295,21 @@ public class MRBaseForCommonInstructions extends MapReduceBase
 	        	dcValues.put(inputIndex, dcInputs[i]);
         	}
 		}	
+	}
+	
+	/**
+	 * Returns the maximum row or column dimension of the given key and value pair. 
+	 * 
+	 * @param key matrix indexes
+	 * @param value MatrixValue of either type MatrixCell or MatrixBlock
+	 * @param row if true return row dimension, else return column dimension
+	 * @return maximum row or column dimension, or 0 if MatrixValue not MatrixCell or MatrixBlock
+	 */
+	private long getMaxDimension( MatrixIndexes key, MatrixValue value, boolean row ) {
+		if( value instanceof MatrixCell )
+			return row ? key.getRowIndex() : key.getColumnIndex();
+		else if( value instanceof MatrixBlock )
+			return row ? value.getNumRows() : value.getNumColumns();
+		return 0;
 	}
 }

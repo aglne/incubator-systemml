@@ -19,7 +19,6 @@
 
 package org.apache.sysml.runtime.controlprogram.context;
 
-import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 
@@ -32,9 +31,10 @@ import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysml.runtime.controlprogram.Program;
-import org.apache.sysml.runtime.controlprogram.caching.CacheException;
+import org.apache.sysml.runtime.controlprogram.caching.CacheableData;
 import org.apache.sysml.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
+import org.apache.sysml.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysml.runtime.instructions.Instruction;
 import org.apache.sysml.runtime.instructions.cp.BooleanObject;
 import org.apache.sysml.runtime.instructions.cp.Data;
@@ -43,14 +43,15 @@ import org.apache.sysml.runtime.instructions.cp.FunctionCallCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.IntObject;
 import org.apache.sysml.runtime.instructions.cp.ScalarObject;
 import org.apache.sysml.runtime.instructions.cp.StringObject;
+import org.apache.sysml.runtime.instructions.gpu.context.GPUContext;
+import org.apache.sysml.runtime.instructions.gpu.context.GPUObject;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
 import org.apache.sysml.runtime.matrix.MatrixDimensionsMetaData;
 import org.apache.sysml.runtime.matrix.MatrixFormatMetaData;
 import org.apache.sysml.runtime.matrix.MetaData;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
-import org.apache.sysml.runtime.matrix.data.InputInfo;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
-import org.apache.sysml.runtime.matrix.data.OutputInfo;
+import org.apache.sysml.runtime.matrix.data.Pair;
 import org.apache.sysml.runtime.util.MapReduceTool;
 import org.apache.sysml.runtime.util.UtilFunctions;
 
@@ -66,25 +67,11 @@ public class ExecutionContext
 	
 	//debugging (optional)
 	protected DebugState _dbState = null;
-	
+
 	protected ExecutionContext()
 	{
 		//protected constructor to force use of ExecutionContextFactory
 		this( true, null );
-	}
-	
-	protected ExecutionContext(Program prog)
-	{
-		//protected constructor to force use of ExecutionContextFactory
-		this( true, prog );
-		
-	}
-	
-	protected ExecutionContext(LocalVariableMap vars)
-	{
-		//protected constructor to force use of ExecutionContextFactory
-		this( false, null);
-		_variables = vars;
 	}
 
 	protected ExecutionContext( boolean allocateVariableMap, Program prog )
@@ -112,25 +99,30 @@ public class ExecutionContext
 		_variables = vars;
 	}
 	
+	public void destroyGPUContext() throws DMLRuntimeException {
+		if(GPUContext.isGPUContextCreated)
+			GPUContext.getGPUContext().destroy();
+	}
+	
 	
 	/* -------------------------------------------------------
 	 * Methods to handle variables and associated data objects
 	 * -------------------------------------------------------
 	 */
 	
-	public Data getVariable(String name) 
-	{
+	public Data getVariable(String name) {
 		return _variables.get(name);
 	}
 	
-	public void setVariable(String name, Data val) 
-		throws DMLRuntimeException
-	{
+	public void setVariable(String name, Data val) {
 		_variables.put(name, val);
 	}
+	
+	public boolean containsVariable(String name) {
+		return _variables.keySet().contains(name);
+	}
 
-	public Data removeVariable(String name) 
-	{
+	public Data removeVariable(String name) {
 		return _variables.remove(name);
 	}
 
@@ -145,13 +137,7 @@ public class ExecutionContext
 	{
 		return _variables.get(varname).getMetaData();
 	}
-	
-	public void removeMetaData(String varname) 
-		throws DMLRuntimeException 
-	{
-		_variables.get(varname).removeMetaData();
-	}
-	
+
 	public MatrixObject getMatrixObject(String varname) 
 		throws DMLRuntimeException
 	{
@@ -166,6 +152,41 @@ public class ExecutionContext
 		return (MatrixObject) dat;
 	}
 	
+	public FrameObject getFrameObject(String varname) 
+		throws DMLRuntimeException
+	{
+		Data dat = getVariable(varname);
+		
+		//error handling if non existing or no matrix
+		if( dat == null )
+			throw new DMLRuntimeException("Variable '"+varname+"' does not exist in the symbol table.");
+		if( !(dat instanceof FrameObject) )
+			throw new DMLRuntimeException("Variable '"+varname+"' is not a frame.");
+		
+		return (FrameObject) dat;
+	}
+
+	public CacheableData<?> getCacheableData(String varname) 
+		throws DMLRuntimeException
+	{
+		Data dat = getVariable(varname);
+		
+		//error handling if non existing or no matrix
+		if( dat == null )
+			throw new DMLRuntimeException("Variable '"+varname+"' does not exist in the symbol table.");
+		if( !(dat instanceof CacheableData<?>) )
+			throw new DMLRuntimeException("Variable '"+varname+"' is not a matrix or frame.");
+		
+		return (CacheableData<?>) dat;
+	}
+
+	public void releaseCacheableData(String varname) 
+		throws DMLRuntimeException
+	{
+		CacheableData<?> dat = getCacheableData(varname);
+		dat.release();
+	}
+	
 	public MatrixCharacteristics getMatrixCharacteristics( String varname ) 
 		throws DMLRuntimeException
 	{
@@ -176,54 +197,149 @@ public class ExecutionContext
 	/**
 	 * Pins a matrix variable into memory and returns the internal matrix block.
 	 * 
-	 * @param varName
-	 * @return
-	 * @throws DMLRuntimeException
+	 * @param varName variable name
+	 * @return matrix block
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public MatrixBlock getMatrixInput(String varName) 
 		throws DMLRuntimeException 
 	{	
-		MatrixObject mo = (MatrixObject) getVariable(varName);
+		MatrixObject mo = getMatrixObject(varName);
 		return mo.acquireRead();
+	}
+	
+	public void setMetaData(String varName, long nrows, long ncols) 
+		throws DMLRuntimeException  
+	{
+		MatrixObject mo = getMatrixObject(varName);
+		if(mo.getNumRows() == nrows && mo.getNumColumns() == ncols) 
+			return;
+		
+		MetaData oldMetaData = mo.getMetaData();
+		if( oldMetaData == null || !(oldMetaData instanceof MatrixFormatMetaData) )
+			throw new DMLRuntimeException("Metadata not available");
+			
+		MatrixCharacteristics mc = new MatrixCharacteristics((long)nrows, (long)ncols, 
+				(int) mo.getNumRowsPerBlock(), (int)mo.getNumColumnsPerBlock());
+		mo.setMetaData(new MatrixFormatMetaData(mc, 
+				((MatrixFormatMetaData)oldMetaData).getOutputInfo(),
+				((MatrixFormatMetaData)oldMetaData).getInputInfo()));
+	}
+
+	/**
+	 * Allocates a dense matrix on the GPU (for output)
+	 * @param varName	name of the output matrix (known by this {@link ExecutionContext})
+	 * @return a pair containing the wrapping {@link MatrixObject} and a boolean indicating whether a cuda memory allocation took place (as opposed to the space already being allocated)
+	 * @throws DMLRuntimeException
+	 */
+	public Pair<MatrixObject, Boolean> getDenseMatrixOutputForGPUInstruction(String varName)
+		throws DMLRuntimeException 
+	{	
+		MatrixObject mo = allocateGPUMatrixObject(varName);
+		boolean allocated = mo.getGPUObject().acquireDeviceModifyDense();
+		mo.getMatrixCharacteristics().setNonZeros(-1);
+		return new Pair<MatrixObject, Boolean>(mo, allocated);
+	}
+
+    /**
+     * Allocates a sparse matrix in CSR format on the GPU.
+     * Assumes that mat.getNumRows() returns a valid number
+     * 
+     * @param varName variable name
+     * @param nnz number of non zeroes
+     * @return matrix object
+     * @throws DMLRuntimeException if DMLRuntimeException occurs
+     */
+    public Pair<MatrixObject, Boolean> getSparseMatrixOutputForGPUInstruction(String varName, long nnz)
+        throws DMLRuntimeException
+    {
+        MatrixObject mo = allocateGPUMatrixObject(varName);
+        mo.getMatrixCharacteristics().setNonZeros(nnz);
+				boolean allocated = mo.getGPUObject().acquireDeviceModifySparse();
+        return new Pair<MatrixObject, Boolean>(mo, allocated);
+    } 
+
+	/**
+	 * Allocates the {@link GPUObject} for a given LOPS Variable (eg. _mVar3)
+	 * @param varName variable name
+	 * @return matrix object
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 */
+	public MatrixObject allocateGPUMatrixObject(String varName) throws DMLRuntimeException {
+		MatrixObject mo = getMatrixObject(varName);
+		if( mo.getGPUObject() == null ) {
+			mo.setGPUObject(GPUContext.createGPUObject(mo));
+		}
+		return mo;
+	}
+
+	public Pair<MatrixObject, Boolean> getMatrixInputForGPUInstruction(String varName)
+			throws DMLRuntimeException 
+	{
+		boolean copied = false;
+		MatrixObject mo = getMatrixObject(varName);
+		if(mo == null) {
+			throw new DMLRuntimeException("No matrix object available for variable:" + varName);
+		}
+		if( mo.getGPUObject() == null ) {
+			mo.setGPUObject(GPUContext.createGPUObject(mo));
+		}
+		boolean acquired = false;
+		if( !mo.getGPUObject().isAllocated() ) {
+			mo.acquireRead();
+			acquired = true;
+		}
+		copied = mo.getGPUObject().acquireDeviceRead();
+		if(acquired) {
+			mo.release();
+		}
+		return new Pair<MatrixObject, Boolean>(mo, copied);
 	}
 	
 	/**
 	 * Unpins a currently pinned matrix variable. 
 	 * 
-	 * @param varName
-	 * @throws DMLRuntimeException
+	 * @param varName variable name
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public void releaseMatrixInput(String varName) 
 		throws DMLRuntimeException 
 	{
-		MatrixObject mo = (MatrixObject) getVariable(varName);
+		MatrixObject mo = getMatrixObject(varName);
 		mo.release();
+	}
+	
+	public void releaseMatrixInputForGPUInstruction(String varName)
+		throws DMLRuntimeException 
+	{
+		MatrixObject mo = getMatrixObject(varName);
+		mo.getGPUObject().releaseInput();
 	}
 	
 	/**
 	 * Pins a frame variable into memory and returns the internal frame block.
 	 * 
-	 * @param varName
-	 * @return
-	 * @throws DMLRuntimeException
+	 * @param varName variable name
+	 * @return frame block
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public FrameBlock getFrameInput(String varName) 
 		throws DMLRuntimeException 
 	{	
-		FrameObject fo = (FrameObject) getVariable(varName);
+		FrameObject fo = getFrameObject(varName);
 		return fo.acquireRead();
 	}
 	
 	/**
 	 * Unpins a currently pinned frame variable. 
 	 * 
-	 * @param varName
-	 * @throws DMLRuntimeException
+	 * @param varName variable name
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public void releaseFrameInput(String varName) 
 		throws DMLRuntimeException 
 	{
-		FrameObject fo = (FrameObject) getVariable(varName);
+		FrameObject fo = getFrameObject(varName);
 		fo.release();
 	}
 	
@@ -266,58 +382,44 @@ public class ExecutionContext
 		setVariable(varName, so);
 	}
 	
-	/**
-	 * 
-	 * @param varName
-	 * @param outputData
-	 * @throws DMLRuntimeException
-	 */
+	public void releaseMatrixOutputForGPUInstruction(String varName) throws DMLRuntimeException {
+		MatrixObject mo = getMatrixObject(varName);
+		if(mo.getGPUObject() == null || !mo.getGPUObject().isAllocated()) {
+			throw new DMLRuntimeException("No output is allocated on GPU");
+		}
+		mo.getGPUObject().releaseOutput();
+	}
+
 	public void setMatrixOutput(String varName, MatrixBlock outputData) 
-		throws DMLRuntimeException 
+			throws DMLRuntimeException 
 	{
-		MatrixObject mo = (MatrixObject) getVariable(varName);
-        mo.acquireModify(outputData);
+		MatrixObject mo = getMatrixObject(varName);
+		mo.acquireModify(outputData);
 	    mo.release();
-	        
 	    setVariable(varName, mo);
 	}
-	
-	/**
-	 * 
-	 * @param varName
-	 * @param outputData
-	 * @param inplace
-	 * @throws DMLRuntimeException
-	 */
-	public void setMatrixOutput(String varName, MatrixBlock outputData, boolean inplace) 
+
+	public void setMatrixOutput(String varName, MatrixBlock outputData, UpdateType flag) 
 		throws DMLRuntimeException 
 	{
-		if( inplace ) //modify metadata to prevent output serialization
-		{
-			MatrixObject sores = (MatrixObject) this.getVariable (varName);
-	        sores.enableUpdateInPlace( true );
+		if( flag.isInPlace() ) {
+			//modify metadata to carry update status
+			MatrixObject mo = getMatrixObject(varName);
+			mo.setUpdateType( flag );
 		}
 		
 		//default case
 		setMatrixOutput(varName, outputData);
 	}
-	
-	/**
-	 * 
-	 * @param varName
-	 * @param outputData
-	 * @throws DMLRuntimeException
-	 */
+
 	public void setFrameOutput(String varName, FrameBlock outputData) 
 		throws DMLRuntimeException 
 	{
-		//TODO: fix createvar instructions generation for frame handles
-		//FrameObject fo = (FrameObject) getVariable(varName);
-		MatrixCharacteristics mc = new MatrixCharacteristics(-1, -1, -1, -1);
-		MatrixFormatMetaData meta = new MatrixFormatMetaData(mc, OutputInfo.BinaryCellOutputInfo, InputInfo.BinaryCellInputInfo);
-		FrameObject fo = new FrameObject(varName, meta);
+		FrameObject fo = getFrameObject(varName);
+		if( outputData.getNumColumns()>0 && outputData.getSchema()!=null )
+			fo.setValueType(outputData.getSchema()[0]);
 		fo.acquireModify(outputData);
-	    fo.release();
+		fo.release();
 		    
 	    setVariable(varName, fo);
 	}
@@ -332,6 +434,9 @@ public class ExecutionContext
 	 * parfor shared inputs that are passed to functions.
 	 * 
 	 * The function returns the OLD "clean up" state of matrix objects.
+	 * 
+	 * @param varList variable list
+	 * @return map of old cleanup state of matrix objects
 	 */
 	public HashMap<String,Boolean> pinVariables(ArrayList<String> varList) 
 	{
@@ -376,7 +481,10 @@ public class ExecutionContext
 	 *    unpinVariables(varList, oldStatus);
 	 *    </code>
 	 * 
-	 * i.e., a call to unpinVariables() is preceded by pinVariables(). 
+	 * i.e., a call to unpinVariables() is preceded by pinVariables().
+	 * 
+	 * @param varList variable list
+	 * @param varsState variable state
 	 */
 	public void unpinVariables(ArrayList<String> varList, HashMap<String,Boolean> varsState)
 	{
@@ -392,7 +500,7 @@ public class ExecutionContext
 	/**
 	 * NOTE: No order guaranteed, so keep same list for pin and unpin. 
 	 * 
-	 * @return
+	 * @return variable list as strings
 	 */
 	public ArrayList<String> getVarList()
 	{
@@ -401,13 +509,6 @@ public class ExecutionContext
 		return varlist;
 	}
 
-	
-	/**
-	 * 
-	 * @param mo
-	 * @throws CacheException
-	 * @throws IOException
-	 */
 	public void cleanupMatrixObject(MatrixObject mo) 
 		throws DMLRuntimeException 
 	{
@@ -449,24 +550,14 @@ public class ExecutionContext
 			_dbState.prevPC = new DMLProgramCounter(DMLProgram.DEFAULT_NAMESPACE, "main", 0, 0); //initialize previous pc
 		}
 	}
-	
-	/**
-	 * 
-	 * @param index
-	 * @throws DMLRuntimeException 
-	 */
+
 	public void updateDebugState( int index ) throws DMLRuntimeException 
 	{
 		if(DMLScript.ENABLE_DEBUG_MODE) {
 			_dbState.getPC().setProgramBlockNumber(index);
 		}
 	}
-	
-	/**
-	 * 
-	 * @param currInst
-	 * @throws DMLRuntimeException 
-	 */
+
 	public void updateDebugState( Instruction currInst ) throws DMLRuntimeException
 	{
 		if (DMLScript.ENABLE_DEBUG_MODE) {
@@ -481,10 +572,7 @@ public class ExecutionContext
 			suspendIfAskedInDebugMode(currInst);	
 		}
 	}
-	
-	/**
-	 * 
-	 */
+
 	public void clearDebugProgramCounters()
 	{
 		if(DMLScript.ENABLE_DEBUG_MODE) {
@@ -523,9 +611,9 @@ public class ExecutionContext
 	 * In this function, if the user has issued one of the step instructions or
 	 * has enabled suspend flag in previous instruction (through breakpoint),
 	 * then it will wait until user issues a new debugger command.
-	 * @param currInst
-	 * @param ec
-	 * @throws DMLRuntimeException 
+	 * 
+	 * @param currInst current instruction
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	@SuppressWarnings("deprecation")
 	private void suspendIfAskedInDebugMode(Instruction currInst ) throws DMLRuntimeException {

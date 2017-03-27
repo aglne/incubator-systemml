@@ -23,7 +23,6 @@ import org.apache.sysml.hops.HopsException;
 import org.apache.sysml.hops.globalopt.gdfgraph.GDFGraph;
 import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 
 /**
  * Super class for all optimizers (e.g., transformation-based, and enumeration-based)
@@ -36,14 +35,13 @@ public abstract class GlobalOptimizer
 	 * Core optimizer call, to be implemented by an instance of a global
 	 * data flow optimizer.
 	 * 
-	 * @param prog
-	 * @param rtprog
-	 * @return
-	 * @throws DMLRuntimeException
-	 * @throws HopsException
-	 * @throws LopsException
-	 * @throws  
+	 * @param gdfgraph the GDF graph
+	 * @param summary the summaruy
+	 * @return the GDF graph
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 * @throws HopsException if HopsException occurs
+	 * @throws LopsException if LopsException occurs
 	 */
 	public abstract GDFGraph optimize( GDFGraph gdfgraph, Summary summary )
-		throws DMLRuntimeException, DMLUnsupportedOperationException, HopsException, LopsException;
+		throws DMLRuntimeException, HopsException, LopsException;
 }

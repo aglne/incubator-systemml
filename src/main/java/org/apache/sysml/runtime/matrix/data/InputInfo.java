@@ -53,14 +53,7 @@ public class InputInfo implements Serializable
 		inputKeyClass=keyCls;
 		inputValueClass=valueCls;
 	}
-	public InputInfo(Class<? extends InputFormat> formatCls, 
-			Class<? extends Writable> keyCls, Class<? extends Writable> valueCls, MetaData md)
-	{
-		inputFormatClass=formatCls;
-		inputKeyClass=keyCls;
-		inputValueClass=valueCls;
-		metadata=md;
-	}
+
 	public void setMetaData(MetaData md)
 	{
 		metadata=md;
@@ -72,8 +65,9 @@ public class InputInfo implements Serializable
 	public static final InputInfo BinaryCellInputInfo=new InputInfo(SequenceFileInputFormat.class, 
 			MatrixIndexes.class, MatrixCell.class);
 	public static final InputInfo BinaryBlockInputInfo=new InputInfo(
-			//for jobs like GMR, we use CombineSequenceFileInputFormat (which requires to specify the maxsplitsize, hence not included here)
 			SequenceFileInputFormat.class, MatrixIndexes.class, MatrixBlock.class); 
+	public static final InputInfo BinaryBlockFrameInputInfo=new InputInfo(
+			SequenceFileInputFormat.class, LongWritable.class, FrameBlock.class); 
 	
 	// Format that denotes the input of a SORT job
 	public static final InputInfo InputInfoForSort=new InputInfo(SequenceFileInputFormat.class, 
@@ -133,12 +127,7 @@ public class InputInfo implements Serializable
 			return CSVInputInfo;
 		return null;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 */
+
 	public static InputInfo stringExternalToInputInfo(String str) {
 		if( DataExpression.FORMAT_TYPE_VALUE_TEXT.equals(str) )
 			return InputInfo.TextCellInputInfo;

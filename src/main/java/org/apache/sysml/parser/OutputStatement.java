@@ -19,14 +19,12 @@
 
 package org.apache.sysml.parser;
 
-import java.util.ArrayList;
 import java.util.HashMap;
 
 import org.apache.sysml.api.DMLScript;
 import org.apache.sysml.debug.DMLBreakpointManager;
 import org.apache.sysml.parser.Expression.DataOp;
 
- 
 public class OutputStatement extends Statement
 {
 		
@@ -37,7 +35,8 @@ public class OutputStatement extends Statement
 																DataExpression.FORMAT_TYPE, 
 																DataExpression.DELIM_DELIMITER, 
 																DataExpression.DELIM_HAS_HEADER_ROW, 
-																DataExpression.DELIM_SPARSE};
+																DataExpression.DELIM_SPARSE,
+																DataExpression.DESCRIPTIONPARAM};
 
 	public DataIdentifier getIdentifier(){
 		return _id;
@@ -57,76 +56,7 @@ public class OutputStatement extends Statement
 		_paramsExpr = new DataExpression(op, new HashMap<String,Expression>(),
 				filename, blp, bcp, elp, ecp);
 	}
-	
-	/**
-	 * Called by the parser (both javacc and antlr).
-	 * 
-	 * @param fname
-	 * @param fci
-	 * @param filename
-	 * @param blp
-	 * @param bcp
-	 * @param elp
-	 * @param ecp
-	 * @throws DMLParseException
-	 */
-	OutputStatement(String fname, FunctionCallIdentifier fci, 
-			String filename, int blp, int bcp, int elp, int ecp) 
-		throws DMLParseException 
-	{
-		
-		this.setAllPositions(filename, blp, bcp, elp, ecp);
-		DataOp op = Expression.DataOp.WRITE;
-		ArrayList<ParameterExpression> passedExprs = fci.getParamExprs();
-		_paramsExpr = new DataExpression(op, new HashMap<String,Expression>(),
-				filename, blp, bcp, elp, ecp);
-		DMLParseException runningList = new DMLParseException(fname);
-		
-		//check number parameters and proceed only if this will not cause errors
-		if (passedExprs.size() < 2)
-			runningList.add(new DMLParseException(fci.getFilename(), fci.printErrorLocation() + "write method must specify both variable to write to file, and filename to write variable to"));
-		else
-		{
-			ParameterExpression firstParam = passedExprs.get(0);
-			if (firstParam.getName() != null || (!(firstParam.getExpr() instanceof DataIdentifier)))
-				runningList.add(new DMLParseException(fci.getFilename(), fci.printErrorLocation() + "first argument to write method must be name of variable to be written out"));
-			else
-				_id = (DataIdentifier)firstParam.getExpr();
-			
-			ParameterExpression secondParam = passedExprs.get(1);
-			if (secondParam.getName() != null || (secondParam.getName() != null && secondParam.getName().equals(DataExpression.IO_FILENAME)))
-				runningList.add(new DMLParseException(fci.getFilename(), fci.printErrorLocation() + "second argument to write method must be filename of file variable written to"));
-			else
-				addExprParam(DataExpression.IO_FILENAME, secondParam.getExpr(), false);
-				
-			for (int i = 2; i< passedExprs.size(); i++){
-				ParameterExpression currParam = passedExprs.get(i);
-				try {
-					addExprParam(currParam.getName(), currParam.getExpr(), false);
-				} catch (DMLParseException e){
-					runningList.add(e);
-				}
-			}
-			if (fname.equals("writeMM")){
-				StringIdentifier writeMMExpr = new StringIdentifier(DataExpression.FORMAT_TYPE_VALUE_MATRIXMARKET,
-						this.getFilename(), this.getBeginLine(), this.getBeginColumn(), this.getEndLine(), this.getEndColumn());
-				addExprParam(DataExpression.FORMAT_TYPE, writeMMExpr, false);
-			}
-			else if (fname.equals("write.csv")){
-				StringIdentifier delimitedExpr = new StringIdentifier(DataExpression.FORMAT_TYPE_VALUE_CSV,
-						this.getFilename(), this.getBeginLine(), this.getBeginColumn(), this.getEndLine(), this.getEndColumn());
-				addExprParam(DataExpression.FORMAT_TYPE, delimitedExpr, false);
-			}
-		}
-		
-		if (runningList.size() > 0)
-			throw runningList;
-	}
-	
-	public void setExprParam(String name, Expression value) {
-		_paramsExpr.addVarParam(name, value);
-	}
-	
+
 	public static boolean isValidParamName(String key){
 		for (String paramName : WRITE_VALID_PARAM_NAMES)
 			if (paramName.equals(key))
@@ -134,20 +64,16 @@ public class OutputStatement extends Statement
 			return false;
 	}
 	
-	public void addExprParam(String name, Expression value, boolean fromMTDFile) throws DMLParseException
+	public void addExprParam(String name, Expression value, boolean fromMTDFile) 
+		throws LanguageException
 	{
-		DMLParseException runningList = new DMLParseException(value.getFilename());
-		
 		if( _paramsExpr.getVarParam(name) != null )
-			runningList.add(new DMLParseException(value.getFilename(), value.printErrorLocation() + "attempted to add IOStatement parameter " + name + " more than once"));
+			raiseValidateError("attempted to add IOStatement parameter " + name + " more than once", false);
 		
 		if( !OutputStatement.isValidParamName(name) )
-			runningList.add(new DMLParseException(value.getFilename(), value.printErrorLocation() + "attempted to add invalid write statement parameter: " + name));
+			raiseValidateError("attempted to add invalid write statement parameter: " + name, false);
 		
 		_paramsExpr.addVarParam(name, value);
-		
-		if (runningList.size() > 0)
-			throw runningList;
 	}
 	
 	// rewrites statement to support function inlining (create deep copy)
@@ -183,19 +109,28 @@ public class OutputStatement extends Statement
 	public VariableSet initializebackwardLV(VariableSet lo){
 		return lo;
 	}
-	
-	public String toString(){
+
+	public String toString() {
 		StringBuilder sb = new StringBuilder();
-		 sb.append(Statement.OUTPUTSTATEMENT + " ( " );
-		 sb.append( _id.toString() + ", " +  _paramsExpr.getVarParam(DataExpression.IO_FILENAME).toString());
-		 for (String key : _paramsExpr.getVarParams().keySet()){
-			 if (!key.equals(DataExpression.IO_FILENAME))
-				 sb.append(", " + key + "=" + _paramsExpr.getVarParam(key));
-		 }
-		 sb.append(" );");
-		 return sb.toString(); 
+		sb.append(Statement.OUTPUTSTATEMENT + "(");
+		sb.append("id=" + _id.toString());
+		for (String key : _paramsExpr.getVarParams().keySet()) {
+			sb.append(", ");
+			sb.append(key);
+			sb.append("=");
+			Expression exp = _paramsExpr.getVarParam(key);
+			if (exp instanceof StringIdentifier) {
+				sb.append("\"");
+				sb.append(exp.toString());
+				sb.append("\"");
+			} else {
+				sb.append(exp.toString());
+			}
+		}
+		sb.append(");");
+		return sb.toString();
 	}
-	
+
 	@Override
 	public VariableSet variablesRead() {
 		VariableSet result = new VariableSet();

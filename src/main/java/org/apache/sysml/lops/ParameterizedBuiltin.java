@@ -39,53 +39,15 @@ public class ParameterizedBuiltin extends Lop
 {
 	
 	public enum OperationTypes { 
-		INVALID, CDF, INVCDF, RMEMPTY, REPLACE, REXPAND, 
-		PNORM, QNORM, PT, QT, PF, QF, PCHISQ, QCHISQ, PEXP, QEXP,
-		TRANSFORM, TRANSFORMAPPLY, TRANSFORMDECODE,
+		CDF, INVCDF, RMEMPTY, REPLACE, REXPAND,
+		TRANSFORM, TRANSFORMAPPLY, TRANSFORMDECODE, TRANSFORMMETA,
+		TOSTRING
 	};
 	
 	private OperationTypes _operation;
 	private HashMap<String, Lop> _inputParams;
 	private boolean _bRmEmptyBC;
 
-	/**
-	 * Creates a new builtin function LOP.
-	 * 
-	 * @param target
-	 *            target identifier
-	 * @param params
-	 *            parameter list
-	 * @param inputParameters
-	 *            list of input LOPs
-	 * @param function
-	 *            builtin function
-	 * @param numRows
-	 *            number of resulting rows
-	 * @param numCols
-	 *            number of resulting columns
-	 */
-	public ParameterizedBuiltin(HashMap<String, Lop> paramLops, OperationTypes op, DataType dt, ValueType vt) 
-	{
-		super(Lop.Type.ParameterizedBuiltin, dt, vt);
-		_operation = op;
-		
-		for (Lop lop : paramLops.values()) {
-			this.addInput(lop);
-			lop.addOutput(this);
-		}
-		
-		_inputParams = paramLops;
-		
-		/*
-		 * This lop is executed in control program. 
-		 */
-		boolean breaksAlignment = false;
-		boolean aligner = false;
-		boolean definesMRJob = false;
-		lps.addCompatibility(JobType.INVALID);
-		lps.setProperties(inputs, ExecType.CP, ExecLocation.ControlProgram, breaksAlignment, aligner, definesMRJob);
-	}
-	
 	public ParameterizedBuiltin(HashMap<String, Lop> paramLops, OperationTypes op, DataType dt, ValueType vt, ExecType et) 
 		throws HopsException 
 	{
@@ -241,20 +203,17 @@ public class ParameterizedBuiltin extends Lop
 				
 				break;
 				
-			case TRANSFORM: {
-				sb.append("transform");
+			case TRANSFORM: 
+			case TRANSFORMAPPLY:
+			case TRANSFORMDECODE:
+			case TRANSFORMMETA:	{
+				sb.append(_operation.toString().toLowerCase()); //opcode
 				sb.append(OPERAND_DELIMITOR);
 				sb.append(compileGenericParamMap(_inputParams));
 				break;
 			}			
-			case TRANSFORMAPPLY: {
-				sb.append("transformapply");
-				sb.append(OPERAND_DELIMITOR);
-				sb.append(compileGenericParamMap(_inputParams));
-				break;
-			}
-			case TRANSFORMDECODE: {
-				sb.append("transformdecode");
+			case TOSTRING:{
+				sb.append("toString"); //opcode
 				sb.append(OPERAND_DELIMITOR);
 				sb.append(compileGenericParamMap(_inputParams));
 				break;
@@ -498,11 +457,6 @@ public class ParameterizedBuiltin extends Lop
 		return sb.toString();
 	}
 	
-	/**
-	 * 
-	 * @param params
-	 * @return
-	 */
 	private static String compileGenericParamMap(HashMap<String, Lop> params) {
 		StringBuilder sb = new StringBuilder();		
 		for ( Entry<String, Lop> e : params.entrySet() ) {

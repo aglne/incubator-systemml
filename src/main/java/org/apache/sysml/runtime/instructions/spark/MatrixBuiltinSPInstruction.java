@@ -22,7 +22,6 @@ package org.apache.sysml.runtime.instructions.spark;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.function.Function;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysml.runtime.instructions.cp.CPOperand;
@@ -31,9 +30,6 @@ import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.matrix.operators.UnaryOperator;
 
-/**
- * 
- */
 public class MatrixBuiltinSPInstruction extends BuiltinUnarySPInstruction
 {
 	
@@ -43,7 +39,7 @@ public class MatrixBuiltinSPInstruction extends BuiltinUnarySPInstruction
 
 	@Override 
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{	
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		
@@ -59,10 +55,7 @@ public class MatrixBuiltinSPInstruction extends BuiltinUnarySPInstruction
 		sec.setRDDHandleForVariable(output.getName(), out);	
 		sec.addLineageRDD(output.getName(), input1.getName());
 	}
-	
-	/**
-	 * 
-	 */
+
 	private static class RDDMatrixBuiltinUnaryOp implements Function<MatrixBlock,MatrixBlock> 
 	{
 		private static final long serialVersionUID = -3128192099832877491L;

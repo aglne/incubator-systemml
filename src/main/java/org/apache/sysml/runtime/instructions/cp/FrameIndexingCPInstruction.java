@@ -20,9 +20,7 @@
 package org.apache.sysml.runtime.instructions.cp;
 
 import org.apache.sysml.parser.Expression.DataType;
-import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
 import org.apache.sysml.runtime.matrix.operators.Operator;
@@ -40,7 +38,7 @@ public final class FrameIndexingCPInstruction extends IndexingCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-			throws DMLUnsupportedOperationException, DMLRuntimeException 
+			throws DMLRuntimeException 
 	{	
 		String opcode = getOpcode();
 		IndexRange ixrange = getIndexRange(ec);
@@ -72,7 +70,7 @@ public final class FrameIndexingCPInstruction extends IndexingCPInstruction
 			else { //FRAME<-SCALAR 
 				if(!ixrange.isScalar())
 					throw new DMLRuntimeException("Invalid index range of scalar leftindexing: "+ixrange.toString()+"." );
-				ScalarObject scalar = ec.getScalarInput(input2.getName(), ValueType.DOUBLE, input2.isLiteral());
+				ScalarObject scalar = ec.getScalarInput(input2.getName(), input2.getValueType(), input2.isLiteral());
 				out = new FrameBlock(lin);
 				out.set((int)ixrange.rowStart, (int)ixrange.colStart, scalar.getStringValue());
 			}

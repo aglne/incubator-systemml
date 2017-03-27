@@ -21,7 +21,6 @@ package org.apache.sysml.runtime.instructions.mr;
 
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
 import org.apache.sysml.runtime.matrix.mapred.CachedValueMap;
@@ -32,15 +31,7 @@ import org.apache.sysml.runtime.matrix.operators.Operator;
 public class AppendInstruction extends BinaryMRInstructionBase 
 {
 	protected boolean _cbind = true;
-	
-	/**
-	 * 
-	 * @param op
-	 * @param in1
-	 * @param in2
-	 * @param out
-	 * @param istr
-	 */
+
 	public AppendInstruction(Operator op, byte in1, byte in2, byte out, boolean cbind, String istr)
 	{
 		super(op, in1, in2, out);
@@ -52,13 +43,7 @@ public class AppendInstruction extends BinaryMRInstructionBase
 	public boolean isCBind() {
 		return _cbind;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static AppendInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -77,8 +62,8 @@ public class AppendInstruction extends BinaryMRInstructionBase
 	@Override
 	public void processInstruction(Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput, int brlen, int bclen)
-			throws DMLUnsupportedOperationException, DMLRuntimeException 
+			throws DMLRuntimeException 
 	{
-		throw new DMLUnsupportedOperationException("Operations on base append instruction not supported.");
+		throw new DMLRuntimeException("Operations on base append instruction not supported.");
 	}
 }

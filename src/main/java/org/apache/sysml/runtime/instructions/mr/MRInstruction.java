@@ -20,7 +20,6 @@
 package org.apache.sysml.runtime.instructions.mr;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.Instruction;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
@@ -32,10 +31,10 @@ import org.apache.sysml.runtime.matrix.operators.Operator;
 public abstract class MRInstruction extends Instruction 
 {
 	
-	public enum MRINSTRUCTION_TYPE { INVALID, Append, Aggregate, ArithmeticBinary, AggregateBinary, AggregateUnary, 
+	public enum MRINSTRUCTION_TYPE { INVALID, Append, Aggregate, ArithmeticBinary, ArithmeticBinary2, AggregateBinary, AggregateUnary, 
 		Rand, Seq, CSVReblock, CSVWrite, Transform,
 		Reblock, Reorg, Replicate, Unary, CombineBinary, CombineUnary, CombineTernary, PickByCount, Partition,
-		Ternary, Quaternary, CM_N_COV, Combine, MapGroupedAggregate, GroupedAggregate, RangeReIndex, ZeroOut, MMTSJ, PMMJ, MatrixReshape, ParameterizedBuiltin, Sort, MapMultChain,
+		Ternary, Quaternary, CM_N_COV, MapGroupedAggregate, GroupedAggregate, RangeReIndex, ZeroOut, MMTSJ, PMMJ, MatrixReshape, ParameterizedBuiltin, Sort, MapMultChain,
 		CumsumAggregate, CumsumSplit, CumsumOffset, BinUaggChain, UaggOuterChain, RemoveEmpty}; 
 	
 	
@@ -61,40 +60,18 @@ public abstract class MRInstruction extends Instruction
 
 	@Override
 	public void processInstruction(ExecutionContext ec)
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		//do nothing (not applicable for MR instructions)
 	}
 
-	/**
-	 * 
-	 * @param valueClass
-	 * @param cachedValues
-	 * @param tempValue
-	 * @param zeroInput
-	 * @param blockRowFactor
-	 * @param blockColFactor
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
 	public abstract void processInstruction(Class<? extends MatrixValue> valueClass, CachedValueMap cachedValues, 
 			IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException;
+		throws DMLRuntimeException;
 
-	
-	/**
-	 * 
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
 	public abstract byte[] getInputIndexes() 
 		throws DMLRuntimeException;
 
-	/**
-	 * 
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
 	public abstract byte[] getAllIndexes() 
 		throws DMLRuntimeException;
 }

@@ -34,12 +34,10 @@ import org.apache.sysml.runtime.matrix.data.IJV;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysml.runtime.matrix.data.PartialBlock;
+import org.apache.sysml.runtime.matrix.data.SparseBlock.Type;
 import org.apache.sysml.runtime.matrix.data.TaggedAdaptivePartialBlock;
+import org.apache.sysml.runtime.util.UtilFunctions;
 
-/**
- * 
- * 
- */
 public class ReblockBuffer 
 {
 	
@@ -57,12 +55,7 @@ public class ReblockBuffer
 	private long _clen = -1;
 	private int _brlen = -1;
 	private int _bclen = -1;
-	
-	public ReblockBuffer( long rlen, long clen, int brlen, int bclen )
-	{
-		this( DEFAULT_BUFFER_SIZE, rlen, clen, brlen, bclen );
-	}
-	
+
 	public ReblockBuffer( int buffersize, long rlen, long clen, int brlen, int bclen  )
 	{
 		_bufflen = buffersize;
@@ -75,13 +68,7 @@ public class ReblockBuffer
 		_brlen = brlen;
 		_bclen = bclen;
 	}
-	
-	/**
-	 * 
-	 * @param r
-	 * @param c
-	 * @param v
-	 */
+
 	public void appendCell( long r, long c, double v )
 	{
 		long tmp = Double.doubleToRawLongBits(v);
@@ -90,16 +77,7 @@ public class ReblockBuffer
 		_buff[_count][2] = tmp;
 		_count++;
 	}
-	
-	/**
-	 * 
-	 * @param r_offset
-	 * @param c_offset
-	 * @param inBlk
-	 * @param index
-	 * @param out
-	 * @throws IOException
-	 */
+
 	public void appendBlock(long r_offset, long c_offset, MatrixBlock inBlk, byte index, OutputCollector<Writable, Writable> out ) 
 		throws IOException
 	{
@@ -154,13 +132,7 @@ public class ReblockBuffer
 	{
 		return _bufflen;
 	}
-	
-	/**
-	 * 
-	 * @param index
-	 * @param out
-	 * @throws IOException
-	 */
+
 	public void flushBuffer( byte index, OutputCollector<Writable, Writable> out ) 
 		throws IOException
 	{
@@ -175,8 +147,8 @@ public class ReblockBuffer
 		long cbi = -1, cbj = -1; //current block indexes
 		for( int i=0; i<_count; i++ )
 		{
-			long bi = getBlockIndex(_buff[i][0], _brlen);
-			long bj = getBlockIndex(_buff[i][1], _bclen);
+			long bi = UtilFunctions.computeBlockIndex(_buff[i][0], _brlen);
+			long bj = UtilFunctions.computeBlockIndex(_buff[i][1], _bclen);
 			
 			//switch to next block
 			if( bi != cbi || bj != cbj ) {
@@ -208,8 +180,8 @@ public class ReblockBuffer
 			cbi = -1; cbj = -1; //current block indexes
 			for( int i=0; i<_count; i++ )
 			{
-				long bi = getBlockIndex(_buff[i][0], _brlen);
-				long bj = getBlockIndex(_buff[i][1], _bclen);
+				long bi = UtilFunctions.computeBlockIndex(_buff[i][0], _brlen);
+				long bj = UtilFunctions.computeBlockIndex(_buff[i][1], _bclen);
 				
 				//output block and switch to next index pair
 				if( bi != cbi || bj != cbj ) {
@@ -221,8 +193,8 @@ public class ReblockBuffer
 							       Math.min(_bclen, (int)(_clen-(bj-1)*_bclen)), sparse);
 				}
 				
-				int ci = getIndexInBlock(_buff[i][0], _brlen);
-				int cj = getIndexInBlock(_buff[i][1], _bclen);
+				int ci = UtilFunctions.computeCellInBlock(_buff[i][0], _brlen);
+				int cj = UtilFunctions.computeCellInBlock(_buff[i][1], _bclen);
 				double tmp = Double.longBitsToDouble(_buff[i][2]);
 				tmpBlock.appendValue(ci, cj, tmp); 
 			}
@@ -236,10 +208,10 @@ public class ReblockBuffer
 			outVal.set(tmpVal);
 			for( int i=0; i<_count; i++ )
 			{
-				long bi = getBlockIndex(_buff[i][0], _brlen);
-				long bj = getBlockIndex(_buff[i][1], _bclen);
-				int ci = getIndexInBlock(_buff[i][0], _brlen);
-				int cj = getIndexInBlock(_buff[i][1], _bclen);
+				long bi = UtilFunctions.computeBlockIndex(_buff[i][0], _brlen);
+				long bj = UtilFunctions.computeBlockIndex(_buff[i][1], _bclen);
+				int ci = UtilFunctions.computeCellInBlock(_buff[i][0], _brlen);
+				int cj = UtilFunctions.computeCellInBlock(_buff[i][1], _bclen);
 				double tmp = Double.longBitsToDouble(_buff[i][2]);
 				tmpIx.setIndexes(bi, bj);
 				tmpVal.set(ci, cj, tmp); //in outVal, in outTVal
@@ -249,13 +221,7 @@ public class ReblockBuffer
 		
 		_count = 0;
 	}
-	
-	/**
-	 * 
-	 * @param outList
-	 * @throws IOException
-	 * @throws DMLRuntimeException 
-	 */
+
 	public void flushBufferToBinaryBlocks( ArrayList<IndexedMatrixValue> outList ) 
 		throws IOException, DMLRuntimeException
 	{
@@ -270,8 +236,8 @@ public class ReblockBuffer
 		long cbi = -1, cbj = -1; //current block indexes
 		for( int i=0; i<_count; i++ )
 		{
-			long bi = getBlockIndex(_buff[i][0], _brlen);
-			long bj = getBlockIndex(_buff[i][1], _bclen);
+			long bi = UtilFunctions.computeBlockIndex(_buff[i][0], _brlen);
+			long bj = UtilFunctions.computeBlockIndex(_buff[i][1], _bclen);
 			
 			//switch to next block
 			if( bi != cbi || bj != cbj ) {
@@ -290,8 +256,8 @@ public class ReblockBuffer
 		cbi = -1; cbj = -1; //current block indexes
 		for( int i=0; i<_count; i++ )
 		{
-			long bi = getBlockIndex(_buff[i][0], _brlen);
-			long bj = getBlockIndex(_buff[i][1], _bclen);
+			long bi = UtilFunctions.computeBlockIndex(_buff[i][0], _brlen);
+			long bj = UtilFunctions.computeBlockIndex(_buff[i][1], _bclen);
 			
 			//output block and switch to next index pair
 			if( bi != cbi || bj != cbj ) {
@@ -303,8 +269,8 @@ public class ReblockBuffer
 						       Math.min(_bclen, (int)(_clen-(bj-1)*_bclen)), sparse);
 			}
 			
-			int ci = getIndexInBlock(_buff[i][0], _brlen);
-			int cj = getIndexInBlock(_buff[i][1], _bclen);
+			int ci = UtilFunctions.computeCellInBlock(_buff[i][0], _brlen);
+			int cj = UtilFunctions.computeCellInBlock(_buff[i][1], _bclen);
 			double tmp = Double.longBitsToDouble(_buff[i][2]);
 			tmpBlock.appendValue(ci, cj, tmp); 
 		}
@@ -314,37 +280,7 @@ public class ReblockBuffer
 		
 		_count = 0;
 	}
-	
-	/**
-	 * 
-	 * @param ix
-	 * @param blen
-	 * @return
-	 */
-	private static long getBlockIndex( long ix, int blen )
-	{
-		return (ix-1)/blen+1;
-	}
-	
-	/**
-	 * 
-	 * @param ix
-	 * @param blen
-	 * @return
-	 */
-	private static int getIndexInBlock( long ix, int blen )
-	{
-		return (int)((ix-1)%blen);
-	}
-	
-	/**
-	 * 
-	 * @param out
-	 * @param key
-	 * @param value
-	 * @param block
-	 * @throws IOException
-	 */
+
 	private static void outputBlock( OutputCollector<Writable, Writable> out, MatrixIndexes key, TaggedAdaptivePartialBlock value, MatrixBlock block ) 
 		throws IOException
 	{
@@ -360,15 +296,7 @@ public class ReblockBuffer
 		value.getBaseObject().set(block);
 		out.collect(key, value);
 	}
-	
-	/**
-	 * 
-	 * @param out
-	 * @param key
-	 * @param value
-	 * @throws IOException
-	 * @throws DMLRuntimeException 
-	 */
+
 	private static void outputBlock( ArrayList<IndexedMatrixValue> out, MatrixIndexes key, MatrixBlock value ) 
 		throws IOException, DMLRuntimeException
 	{
@@ -382,6 +310,11 @@ public class ReblockBuffer
 		
 		//ensure correct representation (for in-memory blocks)
 		value.examSparsity();
+	
+		//convert ultra-sparse blocks from MCSR to COO in order to 
+		//significantly reduce temporary memory pressure until write 
+		if( value.isUltraSparse() )
+			value = new MatrixBlock(value, Type.COO, false);
 		
 		//output block
 		out.add(new IndexedMatrixValue(key,value));
@@ -397,10 +330,10 @@ public class ReblockBuffer
 		@Override
 		public int compare(long[] arg0, long[] arg1) 
 		{
-			long bi0 = getBlockIndex( arg0[0], _brlen );
-			long bj0 = getBlockIndex( arg0[1], _bclen );
-			long bi1 = getBlockIndex( arg1[0], _brlen );
-			long bj1 = getBlockIndex( arg1[1], _bclen );
+			long bi0 = UtilFunctions.computeBlockIndex( arg0[0], _brlen );
+			long bj0 = UtilFunctions.computeBlockIndex( arg0[1], _bclen );
+			long bi1 = UtilFunctions.computeBlockIndex( arg1[0], _brlen );
+			long bj1 = UtilFunctions.computeBlockIndex( arg1[1], _bclen );
 			
 			return ( bi0 < bi1 || (bi0 == bi1 && bj0 < bj1) ) ? -1 :
                    (( bi0 == bi1 && bj0 == bj1)? 0 : 1);		

@@ -21,6 +21,7 @@ package org.apache.sysml.runtime.instructions.spark;
 
 
 import java.util.ArrayList;
+import java.util.Iterator;
 
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.function.PairFlatMapFunction;
@@ -31,14 +32,13 @@ import org.apache.sysml.hops.OptimizerUtils;
 import org.apache.sysml.lops.MapMult.CacheType;
 import org.apache.sysml.lops.PMMJ;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysml.runtime.functionobjects.Multiply;
 import org.apache.sysml.runtime.functionobjects.Plus;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.instructions.cp.CPOperand;
-import org.apache.sysml.runtime.instructions.spark.data.PartitionedBroadcastMatrix;
+import org.apache.sysml.runtime.instructions.spark.data.PartitionedBroadcast;
 import org.apache.sysml.runtime.instructions.spark.utils.RDDAggregateUtils;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
@@ -48,9 +48,6 @@ import org.apache.sysml.runtime.matrix.operators.AggregateOperator;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.util.UtilFunctions;
 
-/**
- * 
- */
 public class PmmSPInstruction extends BinarySPInstruction 
 {
 	
@@ -66,12 +63,6 @@ public class PmmSPInstruction extends BinarySPInstruction
 		_nrow = nrow;
 	}
 
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
 	public static PmmSPInstruction parseInstruction( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -96,7 +87,7 @@ public class PmmSPInstruction extends BinarySPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{	
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		
@@ -107,12 +98,12 @@ public class PmmSPInstruction extends BinarySPInstruction
 		
 		//get inputs
 		JavaPairRDD<MatrixIndexes,MatrixBlock> in1 = sec.getBinaryBlockRDDHandleForVariable( rddVar );
-		PartitionedBroadcastMatrix in2 = sec.getBroadcastForVariable( bcastVar ); 
+		PartitionedBroadcast<MatrixBlock> in2 = sec.getBroadcastForVariable( bcastVar ); 
 		
 		//execute pmm instruction
 		JavaPairRDD<MatrixIndexes,MatrixBlock> out = in1
 				.flatMapToPair( new RDDPMMFunction(_type, in2, rlen, mc.getRowsPerBlock()) );
-		out = RDDAggregateUtils.sumByKeyStable(out);
+		out = RDDAggregateUtils.sumByKeyStable(out, false);
 		
 		//put output RDD handle into symbol table
 		sec.setRDDHandleForVariable(output.getName(), out);
@@ -122,21 +113,17 @@ public class PmmSPInstruction extends BinarySPInstruction
 		//update output statistics if not inferred
 		updateBinaryMMOutputMatrixCharacteristics(sec, false);
 	}
-	
-	/**
-	 * 
-	 * 
-	 */
+
 	private static class RDDPMMFunction implements PairFlatMapFunction<Tuple2<MatrixIndexes, MatrixBlock>, MatrixIndexes, MatrixBlock> 
 	{
 		private static final long serialVersionUID = -1696560050436469140L;
 		
-		private PartitionedBroadcastMatrix _pmV = null;
+		private PartitionedBroadcast<MatrixBlock> _pmV = null;
 		private long _rlen = -1;
 		private int _brlen = -1;
 		
-		public RDDPMMFunction( CacheType type, PartitionedBroadcastMatrix binput, long rlen, int brlen ) 
-			throws DMLRuntimeException, DMLUnsupportedOperationException
+		public RDDPMMFunction( CacheType type, PartitionedBroadcast<MatrixBlock> binput, long rlen, int brlen ) 
+			throws DMLRuntimeException
 		{
 			_brlen = brlen;
 			_rlen = rlen;
@@ -144,7 +131,7 @@ public class PmmSPInstruction extends BinarySPInstruction
 		}
 		
 		@Override
-		public Iterable<Tuple2<MatrixIndexes, MatrixBlock>> call( Tuple2<MatrixIndexes, MatrixBlock> arg0 ) 
+		public Iterator<Tuple2<MatrixIndexes, MatrixBlock>> call( Tuple2<MatrixIndexes, MatrixBlock> arg0 ) 
 			throws Exception 
 		{
 			ArrayList<Tuple2<MatrixIndexes,MatrixBlock>> ret = new ArrayList<Tuple2<MatrixIndexes,MatrixBlock>>();
@@ -152,7 +139,7 @@ public class PmmSPInstruction extends BinarySPInstruction
 			MatrixBlock mb2 = arg0._2();
 			
 			//get the right hand side matrix
-			MatrixBlock mb1 = _pmV.getMatrixBlock((int)ixIn.getRowIndex(), 1);
+			MatrixBlock mb1 = _pmV.getBlock((int)ixIn.getRowIndex(), 1);
 			
 			//compute target block indexes
 			long minPos = UtilFunctions.toLong( mb1.minNonZero() );
@@ -184,7 +171,7 @@ public class PmmSPInstruction extends BinarySPInstruction
 					ret.add(new Tuple2<MatrixIndexes, MatrixBlock>(new MatrixIndexes(rowIX2, ixIn.getColumnIndex()), out2));
 			}
 			
-			return ret;
+			return ret.iterator();
 		}
 	}
 	

@@ -29,79 +29,91 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
 import org.apache.sysml.runtime.util.MapReduceTool;
 
+/**
+ * Single-threaded frame text cell writer.
+ * 
+ */
 public class FrameWriterTextCell extends FrameWriter
 {
-	/**
-	 * @param src
-	 * @param fname
-	 * @return
-	 * @throws IOException 
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
+
 	@Override
-	public void writeFrameToHDFS( FrameBlock src, String fname, long rlen, long clen )
-		throws IOException, DMLRuntimeException, DMLUnsupportedOperationException 
+	public final void writeFrameToHDFS( FrameBlock src, String fname, long rlen, long clen )
+		throws IOException, DMLRuntimeException 
 	{
-		//validity check frame dimensions
-		if( src.getNumRows() != rlen || src.getNumColumns() != clen ) {
-			throw new IOException("Frame dimensions mismatch with metadata: "+src.getNumRows()+"x"+src.getNumColumns()+" vs "+rlen+"x"+clen+".");
-		}
-				
 		//prepare file access
 		JobConf job = new JobConf(ConfigurationManager.getCachedJobConf());
 		Path path = new Path( fname );
 
 		//if the file already exists on HDFS, remove it.
 		MapReduceTool.deleteFileIfExistOnHDFS( fname );
-			
-		//core write
+		
+		//validity check frame dimensions
+		if( src.getNumRows() != rlen || src.getNumColumns() != clen ) {
+			throw new IOException("Frame dimensions mismatch with metadata: " + 
+					src.getNumRows()+"x"+src.getNumColumns()+" vs "+rlen+"x"+clen+".");
+		}
+		
+		//core write (sequential/parallel)
 		writeTextCellFrameToHDFS(path, job, src, src.getNumRows(), src.getNumColumns());
 	}
 
-	/**
-	 * 
-	 * @param path
-	 * @param job
-	 * @param src
-	 * @param rlen
-	 * @param clen
-	 * @param brlen
-	 * @param bclen
-	 * @throws IOException
-	 */
 	protected void writeTextCellFrameToHDFS( Path path, JobConf job, FrameBlock src, long rlen, long clen )
 		throws IOException
 	{
-		boolean entriesWritten = false;
 		FileSystem fs = FileSystem.get(job);
-        BufferedWriter br = new BufferedWriter(new OutputStreamWriter(fs.create(path,true)));		
 		
-    	int rows = src.getNumRows();
-		int cols = src.getNumColumns();
+		//sequential write to single text file
+		writeTextCellFrameToFile(path, job, fs, src, 0, (int)rlen);	
+	}	
+	
+	/**
+	 * Internal primitive to write a row range of a frame to a single text file, 
+	 * which is used for both single- and multi-threaded writers (for consistency). 
+	 * 
+	 * @param path file path
+	 * @param job job configuration
+	 * @param fs file system
+	 * @param src frame block
+	 * @param rl lower row
+	 * @param ru upper row
+	 * @throws IOException if IOException occurs
+	 */
+	protected final void writeTextCellFrameToFile( Path path, JobConf job, FileSystem fs, FrameBlock src, int rl, int ru ) 
+		throws IOException
+	{
+		boolean entriesWritten = false;
+    	int cols = src.getNumColumns();
 
-		//bound check per block
-		if( rows > rlen || cols > clen ) {
-			throw new IOException("Frame block [1:"+rows+",1:"+cols+"] " +
-					              "out of overall frame range [1:"+rlen+",1:"+clen+"].");
-		}
-		
+    	//create buffered writer 
+    	BufferedWriter br = new BufferedWriter(new OutputStreamWriter(fs.create(path,true)));		
+
 		try
 		{
 			//for obj reuse and preventing repeated buffer re-allocations
 			StringBuilder sb = new StringBuilder();
 			
-			Iterator<String[]> iter = src.getStringRowIterator();
-			for( int i=0; iter.hasNext(); i++ ) { //for all rows
+			//write frame meta data
+			if( rl == 0 ) {
+				for( int j=0; j<cols; j++ )
+					if( !src.isColumnMetadataDefault(j) ) {
+						sb.append("-1 " + (j+1) + " " + src.getColumnMetadata(j).getNumDistinct() + "\n");
+						sb.append("-2 " + (j+1) + " " + src.getColumnMetadata(j).getMvValue() + "\n");
+						br.write( sb.toString() );
+						sb.setLength(0);
+					}
+			}
+			
+			//write frame row range to output
+			Iterator<String[]> iter = src.getStringRowIterator(rl, ru);
+			for( int i=rl; iter.hasNext(); i++ ) { //for all rows
 				String rowIndex = Integer.toString(i+1);
 				String[] row = iter.next();
 				for( int j=0; j<cols; j++ ) {
 					if( row[j] != null ) {
-						sb.append(rowIndex);
+						sb.append( rowIndex );
 						sb.append(' ');
 						sb.append( j+1 );
 						sb.append(' ');
@@ -121,6 +133,6 @@ public class FrameWriterTextCell extends FrameWriter
 		}
 		finally {
 			IOUtilFunctions.closeSilently(br);
-		}
-	}	
+		}		
+	}
 }

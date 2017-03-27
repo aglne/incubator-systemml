@@ -26,7 +26,6 @@ import org.apache.sysml.lops.WeightedCrossEntropy.WCeMMType;
 import org.apache.sysml.lops.WeightedUnaryMM.WUMMType;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
@@ -34,10 +33,6 @@ import org.apache.sysml.runtime.matrix.data.MatrixValue;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.matrix.operators.QuaternaryOperator;
 
-/**
- * 
- * 
- */
 public class QuaternaryCPInstruction extends ComputationCPInstruction
 {
 	
@@ -53,12 +48,6 @@ public class QuaternaryCPInstruction extends ComputationCPInstruction
 		_numThreads = k;
 	}
 
-	/**
-	 * 
-	 * @param inst
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
 	public static QuaternaryCPInstruction parseInstruction(String inst) 
 		throws DMLRuntimeException
 	{	
@@ -116,7 +105,7 @@ public class QuaternaryCPInstruction extends ComputationCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		QuaternaryOperator qop = (QuaternaryOperator) _optr;
 		

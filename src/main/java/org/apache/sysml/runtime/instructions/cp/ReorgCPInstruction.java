@@ -22,7 +22,6 @@ package org.apache.sysml.runtime.instructions.cp;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.functionobjects.DiagIndex;
 import org.apache.sysml.runtime.functionobjects.RevIndex;
@@ -44,11 +43,11 @@ public class ReorgCPInstruction extends UnaryCPInstruction
  	/**
  	 * for opcodes r' and rdiag
  	 * 
- 	 * @param op
- 	 * @param in
- 	 * @param out
- 	 * @param opcode
- 	 * @param istr
+ 	 * @param op operator
+ 	 * @param in cp input operand
+ 	 * @param out cp output operand
+ 	 * @param opcode the opcode
+ 	 * @param istr ?
  	 */
 	public ReorgCPInstruction(Operator op, CPOperand in, CPOperand out, String opcode, String istr){
 		super(op, in, out, opcode, istr);
@@ -58,14 +57,14 @@ public class ReorgCPInstruction extends UnaryCPInstruction
 	/**
 	 * for opcode rsort
 	 * 
-	 * @param op
-	 * @param in
-	 * @param col
-	 * @param desc
-	 * @param ixret
-	 * @param out
-	 * @param opcode
-	 * @param istr
+	 * @param op operator
+	 * @param in cp input operand
+	 * @param col ?
+	 * @param desc ?
+	 * @param ixret ?
+	 * @param out cp output operand
+	 * @param opcode the opcode
+	 * @param istr ?
 	 */
 	public ReorgCPInstruction(Operator op, CPOperand in, CPOperand col, CPOperand desc, CPOperand ixret, CPOperand out, String opcode, String istr){
 		this(op, in, out, opcode, istr);
@@ -84,8 +83,11 @@ public class ReorgCPInstruction extends UnaryCPInstruction
 		String opcode = parts[0];
 		
 		if ( opcode.equalsIgnoreCase("r'") ) {
-			parseUnaryInstruction(str, in, out); //max 2 operands
-			return new ReorgCPInstruction(new ReorgOperator(SwapIndex.getSwapIndexFnObject()), in, out, opcode, str);
+			InstructionUtils.checkNumFields(str, 2, 3);
+			in.split(parts[1]);
+			out.split(parts[2]);
+			int k = Integer.parseInt(parts[3]);
+			return new ReorgCPInstruction(new ReorgOperator(SwapIndex.getSwapIndexFnObject(), k), in, out, opcode, str);
 		} 
 		else if ( opcode.equalsIgnoreCase("rev") ) {
 			parseUnaryInstruction(str, in, out); //max 2 operands
@@ -112,7 +114,7 @@ public class ReorgCPInstruction extends UnaryCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-			throws DMLUnsupportedOperationException, DMLRuntimeException 
+			throws DMLRuntimeException 
 	{
 		//acquire inputs
 		MatrixBlock matBlock = ec.getMatrixInput(input1.getName());		

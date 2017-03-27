@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -35,9 +36,11 @@ import org.apache.sysml.conf.CompilerConfig.ConfigType;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.parser.AssignmentStatement;
 import org.apache.sysml.parser.BinaryExpression;
+import org.apache.sysml.parser.BuiltinFunctionExpression;
 import org.apache.sysml.parser.ConditionalPredicate;
 import org.apache.sysml.parser.DMLProgram;
 import org.apache.sysml.parser.DataIdentifier;
+import org.apache.sysml.parser.DoubleIdentifier;
 import org.apache.sysml.parser.Expression;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
@@ -47,6 +50,7 @@ import org.apache.sysml.parser.FunctionCallIdentifier;
 import org.apache.sysml.parser.FunctionStatement;
 import org.apache.sysml.parser.IfStatement;
 import org.apache.sysml.parser.ImportStatement;
+import org.apache.sysml.parser.IndexedIdentifier;
 import org.apache.sysml.parser.IntIdentifier;
 import org.apache.sysml.parser.IterablePredicate;
 import org.apache.sysml.parser.LanguageException;
@@ -62,8 +66,6 @@ import org.apache.sysml.parser.common.CommonSyntacticValidator;
 import org.apache.sysml.parser.common.CustomErrorListener;
 import org.apache.sysml.parser.common.ExpressionInfo;
 import org.apache.sysml.parser.common.StatementInfo;
-import org.apache.sysml.parser.dml.DmlParser.MatrixMulExpressionContext;
-import org.apache.sysml.parser.dml.DmlSyntacticValidator;
 import org.apache.sysml.parser.pydml.PydmlParser.AddSubExpressionContext;
 import org.apache.sysml.parser.pydml.PydmlParser.AssignmentStatementContext;
 import org.apache.sysml.parser.pydml.PydmlParser.AtomicExpressionContext;
@@ -80,6 +82,7 @@ import org.apache.sysml.parser.pydml.PydmlParser.ConstStringIdExpressionContext;
 import org.apache.sysml.parser.pydml.PydmlParser.ConstTrueExpressionContext;
 import org.apache.sysml.parser.pydml.PydmlParser.DataIdExpressionContext;
 import org.apache.sysml.parser.pydml.PydmlParser.DataIdentifierContext;
+import org.apache.sysml.parser.pydml.PydmlParser.ElifBranchContext;
 import org.apache.sysml.parser.pydml.PydmlParser.ExpressionContext;
 import org.apache.sysml.parser.pydml.PydmlParser.ExternalFunctionDefExpressionContext;
 import org.apache.sysml.parser.pydml.PydmlParser.ForStatementContext;
@@ -119,8 +122,8 @@ import org.apache.sysml.parser.pydml.PydmlParser.WhileStatementContext;
  */
 public class PydmlSyntacticValidator extends CommonSyntacticValidator implements PydmlListener {
 
-	public PydmlSyntacticValidator(CustomErrorListener errorListener, HashMap<String,String> argVals) {
-		super(errorListener, argVals);
+	public PydmlSyntacticValidator(CustomErrorListener errorListener, Map<String,String> argVals, String sourceNamespace, Set<String> prepFunctions) {
+		super(errorListener, argVals, sourceNamespace, prepFunctions);
 	}
 
 	@Override public String namespaceResolutionOp() { return "."; }
@@ -310,21 +313,144 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 	}
 
 
+	/**
+	 * PyDML uses 0-based indexing, so we increment lower indices by 1
+	 * when translating to DML.
+	 *
+	 * @param ctx the parse tree
+	 */
 	@Override
 	public void exitIndexedExpression(IndexedExpressionContext ctx) {
 		boolean isRowLower = (ctx.rowLower != null && !ctx.rowLower.isEmpty() && (ctx.rowLower.info.expr != null));
 		boolean isRowUpper = (ctx.rowUpper != null && !ctx.rowUpper.isEmpty() && (ctx.rowUpper.info.expr != null));
 		boolean isColLower = (ctx.colLower != null && !ctx.colLower.isEmpty() && (ctx.colLower.info.expr != null));
 		boolean isColUpper = (ctx.colUpper != null && !ctx.colUpper.isEmpty() && (ctx.colUpper.info.expr != null));
-		String name = ctx.name.getText();
-		exitIndexedExpressionHelper(ctx, name, ctx.dataInfo,
-				isRowLower ? ctx.rowLower.info : null,
-				isRowUpper ? ctx.rowUpper.info : null,
-				isColLower ? ctx.colLower.info : null,
-				isColUpper ? ctx.colUpper.info : null);
+		boolean isRowSliceImplicit = ctx.rowImplicitSlice != null;
+		boolean isColSliceImplicit = ctx.colImplicitSlice != null;
+        ExpressionInfo rowLower = isRowLower ? ctx.rowLower.info : null;
+        ExpressionInfo rowUpper = isRowUpper ? ctx.rowUpper.info : null;
+        ExpressionInfo colLower = isColLower ? ctx.colLower.info : null;
+        ExpressionInfo colUpper = isColUpper ? ctx.colUpper.info : null;
+
+		ctx.dataInfo.expr = new IndexedIdentifier(ctx.name.getText(), false, false);
+		setFileLineColumn(ctx.dataInfo.expr, ctx);
+
+		try {
+			ArrayList< ArrayList<Expression> > exprList = new ArrayList< ArrayList<Expression> >();
+
+			ArrayList<Expression> rowIndices = new ArrayList<Expression>();
+			ArrayList<Expression> colIndices = new ArrayList<Expression>();
+
+
+			if(!isRowLower && !isRowUpper) {
+				// both not set
+				rowIndices.add(null); rowIndices.add(null);
+			}
+			else if(isRowLower && isRowUpper) {
+				// both set
+				rowIndices.add(incrementByOne(rowLower.expr, ctx));
+				rowIndices.add(rowUpper.expr);
+			}
+			else if(isRowLower && !isRowUpper) {
+				// Add given lower bound
+				rowIndices.add(incrementByOne(rowLower.expr, ctx));
+				if(isRowSliceImplicit) {
+					// Add expression for nrow(X) for implicit upper bound
+					Expression.BuiltinFunctionOp bop = Expression.BuiltinFunctionOp.NROW;
+					DataIdentifier x = new DataIdentifier(ctx.name.getText());
+					int line = ctx.start.getLine();
+					int col = ctx.start.getCharPositionInLine();
+					Expression expr = new BuiltinFunctionExpression(bop, new Expression[]{x},
+							currentFile, line, col, line, col);
+					setFileLineColumn(expr, ctx);
+					rowIndices.add(expr);
+				}
+			}
+			else if(!isRowLower && isRowUpper && isRowSliceImplicit) {
+				// Add expression for `1` for implicit lower bound
+				// Note: We go ahead and increment by 1 to convert from 0-based to 1-based indexing
+				int line = ctx.start.getLine();
+				int col = ctx.start.getCharPositionInLine();
+				IntIdentifier one = new IntIdentifier(1, currentFile, line, col, line, col);
+				setFileLineColumn(one, ctx);
+				rowIndices.add(one);
+
+				// Add given upper bound
+				rowIndices.add(rowUpper.expr);
+			}
+			else {
+				notifyErrorListeners("incorrect index expression for row", ctx.start);
+				return;
+			}
+
+			if(!isColLower && !isColUpper) {
+				// both not set
+				colIndices.add(null); colIndices.add(null);
+			}
+			else if(isColLower && isColUpper) {
+				colIndices.add(incrementByOne(colLower.expr, ctx));
+				colIndices.add(colUpper.expr);
+			}
+			else if(isColLower && !isColUpper) {
+				// Add given lower bound
+				colIndices.add(incrementByOne(colLower.expr, ctx));
+				if(isColSliceImplicit) {
+					// Add expression for ncol(X) for implicit upper bound
+					Expression.BuiltinFunctionOp bop = Expression.BuiltinFunctionOp.NCOL;
+					DataIdentifier x = new DataIdentifier(ctx.name.getText());
+					int line = ctx.start.getLine();
+					int col = ctx.start.getCharPositionInLine();
+					Expression expr = new BuiltinFunctionExpression(bop, new Expression[]{x},
+							currentFile, line, col, line, col);
+					setFileLineColumn(expr, ctx);
+					colIndices.add(expr);
+				}
+			}
+			else if(!isColLower && isColUpper && isColSliceImplicit) {
+				// Add expression for `1` for implicit lower bound
+				// Note: We go ahead and increment by 1 to convert from 0-based to 1-based indexing
+				int line = ctx.start.getLine();
+				int col = ctx.start.getCharPositionInLine();
+				IntIdentifier one = new IntIdentifier(1, currentFile, line, col, line, col);
+				setFileLineColumn(one, ctx);
+				colIndices.add(one);
+
+				// Add given upper bound
+				colIndices.add(colUpper.expr);
+			}
+			else {
+				notifyErrorListeners("incorrect index expression for column", ctx.start);
+				return;
+			}
+			exprList.add(rowIndices);
+			exprList.add(colIndices);
+			((IndexedIdentifier) ctx.dataInfo.expr).setIndices(exprList);
+		}
+		catch(Exception e) {
+			notifyErrorListeners("cannot set the indices", ctx.start);
+			return;
+		}
 	}
 
-
+	/**
+	 * Increment lower indices by 1 when translating from PyDML
+	 * (0-based indexing) to DML (1-based indexing).
+	 *
+	 * @param expr expression 
+	 * @param ctx antlr rule context
+	 * @return expression
+	 */
+	private Expression incrementByOne(Expression expr, ParserRuleContext ctx) {
+		// Addition and subtraction operator same as DML
+		Expression.BinaryOp bop = Expression.getBinaryOp("+");
+		Expression retVal = new BinaryExpression(bop);
+		((BinaryExpression)retVal).setLeft(expr);
+		int line = ctx.start.getLine();
+		int col = ctx.start.getCharPositionInLine();
+		((BinaryExpression)retVal).setRight(new DoubleIdentifier(1.0, currentFile, line, col, line, col));
+		setFileLineColumn(retVal, ctx);
+		return retVal;
+	}
 
 	// -----------------------------------------------------------------
 	//          Command line parameters (begin with a '$')
@@ -352,7 +478,9 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 						+ "through commandline or initialized to default value.";
 				if( ConfigurationManager.getCompilerConfigFlag(ConfigType.IGNORE_UNSPECIFIED_ARGS) ) {
 					ctx.dataInfo.expr = getConstIdFromString(" ", ctx.start);
-					raiseWarning(msg, ctx.start);
+					if (!ConfigurationManager.getCompilerConfigFlag(ConfigType.MLCONTEXT)) {
+						raiseWarning(msg, ctx.start);
+					}
 				}
 				else {
 					notifyErrorListeners(msg, ctx.start);
@@ -379,24 +507,45 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 			filePath = filePath.substring(1, filePath.length()-1);
 		}
 
-		//concatenate working directory to filepath
-		filePath = _workingDir + File.separator + filePath;
+		File file = new File(filePath);
+		if (!file.isAbsolute()) {
+			//concatenate working directory to filepath
+			filePath = _workingDir + File.separator + filePath;
+		}
+		validateNamespace(namespace, filePath, ctx);
+		String scriptID = DMLProgram.constructFunctionKey(namespace, filePath);
 
 		DMLProgram prog = null;
-		try {
-			prog = (new PyDMLParserWrapper()).doParse(filePath, null, argVals);
-		} catch (ParseException e) {
-			notifyErrorListeners("Exception found during importing a program from file " + filePath, ctx.start);
-			return;
+		if (!_scripts.get().containsKey(scriptID))
+		{
+			_scripts.get().put(scriptID, namespace);
+			try {
+				prog = (new PyDMLParserWrapper()).doParse(filePath, null, getQualifiedNamespace(namespace), argVals);
+			} catch (ParseException e) {
+				notifyErrorListeners(e.getMessage(), ctx.start);
+				return;
+			}
+	        // Custom logic whether to proceed ahead or not. Better than the current exception handling mechanism
+			if(prog == null) {
+				notifyErrorListeners("One or more errors found during importing a program from file " + filePath, ctx.start);
+				return;
+			}
+			else {
+				ctx.info.namespaces = new HashMap<String, DMLProgram>();
+				ctx.info.namespaces.put(getQualifiedNamespace(namespace), prog);
+				ctx.info.stmt = new ImportStatement();
+				((ImportStatement) ctx.info.stmt).setCompletePath(filePath);
+				((ImportStatement) ctx.info.stmt).setFilePath(ctx.filePath.getText());
+				((ImportStatement) ctx.info.stmt).setNamespace(namespace);
+			}
 		}
-        // Custom logic whether to proceed ahead or not. Better than the current exception handling mechanism
-		if(prog == null) {
-			notifyErrorListeners("One or more errors found during importing a program from file " + filePath, ctx.start);
-			return;
-		}
-		else {
+		else
+		{
+			// Skip redundant parsing (to prevent potential infinite recursion) and
+			// create empty program for this context to allow processing to continue.
+			prog = new DMLProgram();
 			ctx.info.namespaces = new HashMap<String, DMLProgram>();
-			ctx.info.namespaces.put(namespace, prog);
+			ctx.info.namespaces.put(getQualifiedNamespace(namespace), prog);
 			ctx.info.stmt = new ImportStatement();
 			((ImportStatement) ctx.info.stmt).setCompletePath(filePath);
 			((ImportStatement) ctx.info.stmt).setFilePath(ctx.filePath.getText());
@@ -424,7 +573,7 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 	// -----------------------------------------------------------------
 
 	/** Similar to the "axis" argument in numpy.
-	 * @param ctx
+	 * @param ctx parameter expression
 	 * @return 0 (along rows), 1 (along column) or -1 (for error)
 	 */
 	private int getAxis(ParameterExpression ctx) {
@@ -457,6 +606,12 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		}
 		else if(functionName.equals("mean")) {
 			return axis == 0 ? "colMeans" : "rowMeans";
+		}
+		else if(functionName.equals("var")) {
+			return axis == 0 ? "colVars" : "rowVars";
+		}
+		else if(functionName.equals("sd")) {
+			return axis == 0 ? "colSds" : "rowSds";
 		}
 		else if(functionName.equals("avg")) {
 			return axis == 0 ? "colMeans" : "rowMeans";
@@ -496,16 +651,18 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 
 	/**
 	 * Check function name, namespace, parameters (#params & possible values) and produce useful messages/hints
-	 * @param ctx
-	 * @param namespace
-	 * @param functionName
-	 * @param paramExpression
-	 * @param fnName
-	 * @return
+	 * @param ctx antlr rule context
+	 * @param namespace Namespace of the function
+	 * @param functionName Name of the builtin function
+	 * @param paramExpression Array of parameter names and values
+	 * @param fnName Token of the builtin function identifier
+	 * @return common syntax format for runtime
 	 */
 	private ConvertedDMLSyntax convertPythonBuiltinFunctionToDMLSyntax(ParserRuleContext ctx, String namespace, String functionName, ArrayList<ParameterExpression> paramExpression,
 			Token fnName) {
-
+		if (sources.containsValue(namespace) || functions.contains(functionName)) {
+			return new ConvertedDMLSyntax(namespace, functionName, paramExpression);
+		}
 
 		String fileName = currentFile;
 		int line = ctx.start.getLine();
@@ -521,7 +678,8 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		else if(functionName.equals("sum") || functionName.equals("mean") || functionName.equals("avg") ||
 				functionName.equals("min") || functionName.equals("max")  ||
 				functionName.equals("argmax") || functionName.equals("argmin") ||
-				functionName.equals("cumsum") || functionName.equals("transpose") || functionName.equals("trace")) {
+				functionName.equals("cumsum") || functionName.equals("transpose") || functionName.equals("trace") ||
+				functionName.equals("var") || functionName.equals("sd")) {
 			// 0 maps row-wise computation and 1 maps to column-wise computation
 
 			// can mean sum of all cells or row-wise or columnwise sum
@@ -645,9 +803,10 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 				functionName = "ncol";
 			}
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("random.normal")) {
+		else if(namespace.equals("random") && functionName.equals("normal")) {
 			if(paramExpression.size() != 3) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 3 arguments (number of rows, number of columns, sparsity)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 3 arguments (number of rows, number of columns, sparsity)", fnName);
 				return null;
 			}
 			paramExpression.get(0).setName("rows");
@@ -657,9 +816,24 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 			functionName = "rand";
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("random.uniform")) {
+		else if(namespace.equals("random") && functionName.equals("poisson")) {
+			if(paramExpression.size() != 4) {
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 3 arguments (number of rows, number of columns, sparsity, lambda)", fnName);
+				return null;
+			}
+			paramExpression.get(0).setName("rows");
+			paramExpression.get(1).setName("cols");
+			paramExpression.get(2).setName("sparsity");
+			paramExpression.get(3).setName("lambda");
+			paramExpression.add(new ParameterExpression("pdf", new StringIdentifier("poisson", fileName, line, col, line, col)));
+			functionName = "rand";
+			namespace = DMLProgram.DEFAULT_NAMESPACE;
+		}
+		else if(namespace.equals("random") && functionName.equals("uniform")) {
 			if(paramExpression.size() != 5) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 5 arguments (number of rows, number of columns, sparsity, min, max)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 5 arguments (number of rows, number of columns, sparsity, min, max)", fnName);
 				return null;
 			}
 			paramExpression.get(0).setName("rows");
@@ -804,65 +978,72 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
 		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("range")) {
-			if(paramExpression.size() != 3) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 3 arguments (matrix, scalar value that should be replaced (pattern), scalar value (replacement))", fnName);
+			if (paramExpression.size() < 2) {
+				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts 3 arguments (from, to, increment), with the first 2 lacking default values", fnName);
 				return null;
+			} else if (paramExpression.size() > 3) {
+				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts 3 arguments (from, to, increment)", fnName);
 			}
 			functionName = "seq";
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("norm.cdf")) {
+		else if(namespace.equals("norm") && functionName.equals("cdf")) {
 			if(paramExpression.size() != 3) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 3 arguments (target, mean, sd)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 3 arguments (target, mean, sd)", fnName);
 				return null;
 			}
-			functionName = "cumulativeProbability";
+			functionName = "cdf";
 			paramExpression.get(0).setName("target");
 			paramExpression.get(1).setName("mean");
 			paramExpression.get(2).setName("sd");
 			paramExpression.add(new ParameterExpression("dist", new StringIdentifier("normal", fileName, line, col, line, col)));
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("expon.cdf")) {
+		else if(namespace.equals("expon") && functionName.equals("cdf")) {
 			if(paramExpression.size() != 2) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 2 arguments (target, mean)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 2 arguments (target, mean)", fnName);
 				return null;
 			}
-			functionName = "cumulativeProbability";
+			functionName = "cdf";
 			paramExpression.get(0).setName("target");
 			paramExpression.get(1).setName("mean");
 			paramExpression.add(new ParameterExpression("dist", new StringIdentifier("exp", fileName, line, col, line, col)));
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("chi.cdf")) {
+		else if(namespace.equals("chi") && functionName.equals("cdf")) {
 			if(paramExpression.size() != 2) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 2 arguments (target, df)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 2 arguments (target, df)", fnName);
 				return null;
 			}
-			functionName = "cumulativeProbability";
+			functionName = "cdf";
 			paramExpression.get(0).setName("target");
 			paramExpression.get(1).setName("df");
 			paramExpression.add(new ParameterExpression("dist", new StringIdentifier("chisq", fileName, line, col, line, col)));
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("f.cdf")) {
+		else if(namespace.equals("f") && functionName.equals("cdf")) {
 			if(paramExpression.size() != 3) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 3 arguments (target, df1, df2)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 3 arguments (target, df1, df2)", fnName);
 				return null;
 			}
-			functionName = "cumulativeProbability";
+			functionName = "cdf";
 			paramExpression.get(0).setName("target");
 			paramExpression.get(1).setName("df1");
 			paramExpression.get(2).setName("df2");
 			paramExpression.add(new ParameterExpression("dist", new StringIdentifier("f", fileName, line, col, line, col)));
 			namespace = DMLProgram.DEFAULT_NAMESPACE;
 		}
-		else if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && functionName.equals("t.cdf")) {
+		else if(namespace.equals("t") && functionName.equals("cdf")) {
 			if(paramExpression.size() != 2) {
-				notifyErrorListeners("The builtin function \'" + functionName + "\' accepts exactly 2 arguments (target, df)", fnName);
+				String qualifiedName = namespace + namespaceResolutionOp() + functionName;
+				notifyErrorListeners("The builtin function \'" + qualifiedName + "\' accepts exactly 2 arguments (target, df)", fnName);
 				return null;
 			}
-			functionName = "cumulativeProbability";
+			functionName = "cdf";
 			paramExpression.get(0).setName("target");
 			paramExpression.get(1).setName("df");
 			paramExpression.add(new ParameterExpression("dist", new StringIdentifier("t", fileName, line, col, line, col)));
@@ -911,7 +1092,7 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 	 * For Pydml, matrix multiply is invoked using dot (A, B). This is taken from numpy.dot
 	 * For Dml, it is invoked using "%*%". The dot function call in pydml is converted to a
 	 * {@link BinaryExpression} equivalent to what is done in
-	 * {@link DmlSyntacticValidator#exitMatrixMulExpression(MatrixMulExpressionContext)}
+	 * DmlSyntacticValidator's exitMatrixMulExpression(MatrixMulExpressionContext).
 	 */
 	@Override
 	protected Expression handleLanguageSpecificFunction(ParserRuleContext ctx, String functionName, ArrayList<ParameterExpression> paramExpression){
@@ -945,9 +1126,18 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		String functionName = fnNames[1];
 		ArrayList<ParameterExpression> paramExpression = getParameterExpressionList(ctx.paramExprs);
 
+		castAsScalarDeprecationCheck(functionName, ctx);
+
 		boolean hasLHS = ctx.targetList != null;
 		functionCallAssignmentStatementHelper(ctx, printStatements, outputStatements, hasLHS ? ctx.targetList.dataInfo.expr : null, ctx.info, ctx.name,
 	 			hasLHS ? ctx.targetList.start : null, namespace, functionName, paramExpression, hasLHS);
+	}
+
+	// TODO: remove this when castAsScalar has been removed from DML/PYDML
+	private void castAsScalarDeprecationCheck(String functionName, ParserRuleContext ctx) {
+		if ("castAsScalar".equalsIgnoreCase(functionName)) {
+			raiseWarning("castAsScalar() has been deprecated. Please use scalar().", ctx.start);
+		}
 	}
 
 	@Override
@@ -962,6 +1152,8 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		String functionName = names[1];
 
 		ArrayList<ParameterExpression> paramExpression = getParameterExpressionList(ctx.paramExprs);
+
+		castAsScalarDeprecationCheck(functionName, ctx);
 
 		ConvertedDMLSyntax convertedSyntax = convertToDMLSyntax(ctx, namespace, functionName, paramExpression, ctx.name);
 		if(convertedSyntax == null) {
@@ -1011,7 +1203,6 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		functCall.setFunctionName(functionName);
 		functCall.setFunctionNamespace(namespace);
 
-
 		final ArrayList<DataIdentifier> targetList = new ArrayList<DataIdentifier>();
 		for(DataIdentifierContext dataCtx : ctx.targetList) {
 			if(dataCtx.dataInfo.expr instanceof DataIdentifier) {
@@ -1032,6 +1223,10 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 			if (validBIF)
 				return;
 		}
+
+		// Override default namespace for imported non-built-in function
+		String inferNamespace = (sourceNamespace != null && sourceNamespace.length() > 0 && DMLProgram.DEFAULT_NAMESPACE.equals(namespace)) ? sourceNamespace : namespace;
+		functCall.setFunctionNamespace(inferNamespace);
 
 		setMultiAssignmentStatement(targetList, functCall, ctx, ctx.info);
 	}
@@ -1062,14 +1257,44 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 			ifStmt.mergeStatementBlocksIfBody();
 		}
 
+		IfStatement tailIfStmt = ifStmt;
+
+		if(ctx.elifBranches.size() > 0) {
+			for(ElifBranchContext elifCtx : ctx.elifBranches) {
+				tailIfStmt.addStatementBlockElseBody(getStatementBlock(elifCtx.info.stmt));
+				tailIfStmt = (IfStatement) elifCtx.info.stmt;
+			}
+		}
+
 		if(ctx.elseBody.size() > 0) {
 			for(StatementContext stmtCtx : ctx.elseBody) {
-				ifStmt.addStatementBlockElseBody(getStatementBlock(stmtCtx.info.stmt));
+				tailIfStmt.addStatementBlockElseBody(getStatementBlock(stmtCtx.info.stmt));
 			}
-			ifStmt.mergeStatementBlocksElseBody();
+			tailIfStmt.mergeStatementBlocksElseBody();
 		}
 
 		ctx.info.stmt = ifStmt;
+		setFileLineColumn(ctx.info.stmt, ctx);
+	}
+
+	@Override
+	public void exitElifBranch(ElifBranchContext ctx) {
+		IfStatement elifStmt = new IfStatement();
+		ConditionalPredicate predicate = new ConditionalPredicate(ctx.predicate.info.expr);
+		elifStmt.setConditionalPredicate(predicate);
+		String fileName = currentFile;
+		int line = ctx.start.getLine();
+		int col = ctx.start.getCharPositionInLine();
+		elifStmt.setAllPositions(fileName, line, col, line, col);
+
+		if(ctx.elifBody.size() > 0) {
+			for (StatementContext stmtCtx : ctx.elifBody) {
+				elifStmt.addStatementBlockIfBody(getStatementBlock(stmtCtx.info.stmt));
+			}
+			elifStmt.mergeStatementBlocksIfBody();
+		}
+
+		ctx.info.stmt = elifStmt;
 		setFileLineColumn(ctx.info.stmt, ctx);
 	}
 
@@ -1101,7 +1326,7 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 
 		DataIdentifier iterVar = new DataIdentifier(ctx.iterVar.getText());
 		HashMap<String, String> parForParamValues = null;
-		Expression incrementExpr = new IntIdentifier(1, currentFile, line, col, line, col);
+		Expression incrementExpr = null; //1/-1
 		if(ctx.iterPred.info.increment != null) {
 			incrementExpr = ctx.iterPred.info.increment;
 		}
@@ -1128,12 +1353,14 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		HashMap<String, String> parForParamValues = new HashMap<String, String>();
 		if(ctx.parForParams != null && ctx.parForParams.size() > 0) {
 			for(StrictParameterizedExpressionContext parForParamCtx : ctx.parForParams) {
-				parForParamValues.put(parForParamCtx.paramName.getText(), parForParamCtx.paramVal.getText());
+				String paramVal = parForParamCtx.paramVal.getText();
+				if( argVals.containsKey(paramVal) )
+					paramVal = argVals.get(paramVal);
+				parForParamValues.put(parForParamCtx.paramName.getText(), paramVal);
 			}
 		}
 
-		Expression incrementExpr = new IntIdentifier(1, currentFile, line, col, line, col);
-
+		Expression incrementExpr = null; //1/-1
 		if( ctx.iterPred.info.increment != null ) {
 			incrementExpr = ctx.iterPred.info.increment;
 		}
@@ -1165,7 +1392,8 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 		}
 		ctx.info.from = ctx.from.info.expr;
 		ctx.info.to = ctx.to.info.expr;
-		ctx.info.increment = ctx.increment.info.expr;
+		if(ctx.increment != null && ctx.increment.info != null)
+			ctx.info.increment = ctx.increment.info.expr;
 	}
 
 
@@ -1188,18 +1416,14 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 				dataType = paramCtx.paramType.dataType().getText();
 			}
 
-			if(dataType.equals("matrix")) {
-				// matrix
+			//check and assign data type
+			checkValidDataType(dataType, paramCtx.start);
+			if( dataType.equals("matrix") )
 				dataId.setDataType(DataType.MATRIX);
-			}
-			else if(dataType.equals("scalar")) {
-				// scalar
+			else if( dataType.equals("frame") )
+				dataId.setDataType(DataType.FRAME);
+			else if( dataType.equals("scalar") )
 				dataId.setDataType(DataType.SCALAR);
-			}
-			else {
-				notifyErrorListeners("invalid datatype " + dataType, paramCtx.start);
-				return null;
-			}
 
 			valueType = paramCtx.paramType.valueType().getText();
 			if(valueType.equals("int")) {
@@ -1236,8 +1460,7 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 
 		// set function name
 		functionStmt.setName(ctx.name.getText());
-
-
+		
 		if(ctx.body.size() > 0) {
 			// handle function body
 			// Create arraylist of one statement block
@@ -1271,7 +1494,7 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 
 		// set function name
 		functionStmt.setName(ctx.name.getText());
-
+		
 		// set other parameters
 		HashMap<String, String> otherParams = new HashMap<String,String>();
 		boolean atleastOneClassName = false;
@@ -1372,24 +1595,20 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 
 	@Override
 	public void exitMatrixDataTypeCheck(MatrixDataTypeCheckContext ctx) {
-		if(		ctx.ID().getText().equals("matrix")
-				|| ctx.ID().getText().equals("scalar")
-				) {
-			// Do nothing
-		}
-		else if(ctx.ID().getText().equals("Matrix"))
+		checkValidDataType(ctx.ID().getText(), ctx.start);
+		
+		//additional error handling (pydml-specific)
+		String datatype = ctx.ID().getText();
+		if(datatype.equals("Matrix"))
 			notifyErrorListeners("incorrect datatype (Hint: use matrix instead of Matrix)", ctx.start);
-		else if(ctx.ID().getText().equals("Scalar"))
+		else if(datatype.equals("Frame"))
+			notifyErrorListeners("incorrect datatype (Hint: use frame instead of Frame)", ctx.start);
+		else if(datatype.equals("Scalar"))
 			notifyErrorListeners("incorrect datatype (Hint: use scalar instead of Scalar)", ctx.start);
-		else if(		ctx.ID().getText().equals("int")
-				|| ctx.ID().getText().equals("str")
-				|| ctx.ID().getText().equals("bool")
-				|| ctx.ID().getText().equals("float")
-				) {
-			notifyErrorListeners("expected datatype but found a valuetype (Hint: use matrix or scalar instead of " + ctx.ID().getText() + ")", ctx.start);
-		}
-		else {
-			notifyErrorListeners("incorrect datatype (expected matrix or scalar)", ctx.start);
+		else if( datatype.equals("int") || datatype.equals("str")
+			|| datatype.equals("bool") || datatype.equals("float") ) {
+			notifyErrorListeners("expected datatype but found a valuetype "
+					+ "(Hint: use matrix, frame or scalar instead of " + datatype + ")", ctx.start);
 		}
 	}
 
@@ -1485,6 +1704,8 @@ public class PydmlSyntacticValidator extends CommonSyntacticValidator implements
 	@Override public void enterAddSubExpression(AddSubExpressionContext ctx) {}
 
 	@Override public void enterIfStatement(IfStatementContext ctx) {}
+
+	@Override public void enterElifBranch(ElifBranchContext ctx) {}
 
 	@Override public void enterIgnoreNewLine(IgnoreNewLineContext ctx) {}
 

@@ -1,0 +1,412 @@
+#-------------------------------------------------------------
+#
+# Licensed to the Apache Software Foundation (ASF) under one
+# or more contributor license agreements.  See the NOTICE file
+# distributed with this work for additional information
+# regarding copyright ownership.  The ASF licenses this file
+# to you under the Apache License, Version 2.0 (the
+# "License"); you may not use this file except in compliance
+# with the License.  You may obtain a copy of the License at
+# 
+#   http://www.apache.org/licenses/LICENSE-2.0
+# 
+# Unless required by applicable law or agreed to in writing,
+# software distributed under the License is distributed on an
+# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+# KIND, either express or implied.  See the License for the
+# specific language governing permissions and limitations
+# under the License.
+#
+#-------------------------------------------------------------
+
+/*
+ * Various tests, not including gradient checks.
+ */
+source("nn/layers/conv.dml") as conv
+source("nn/layers/conv_builtin.dml") as conv_builtin
+source("nn/layers/cross_entropy_loss.dml") as cross_entropy_loss
+source("nn/layers/max_pool.dml") as max_pool
+source("nn/layers/max_pool_builtin.dml") as max_pool_builtin
+source("nn/layers/tanh.dml") as tanh
+source("nn/test/conv_simple.dml") as conv_simple
+source("nn/test/max_pool_simple.dml") as max_pool_simple
+source("nn/util.dml") as util
+
+conv = function() {
+  /*
+   * Test for the `conv` functions.
+   */
+  print("Testing the conv functions.")
+
+  # Generate data
+  N = 2  # num examples
+  C = 3  # num channels
+  Hin = 5  # input height
+  Win = 5  # input width
+  F = 2  # num filters
+  Hf = 3  # filter height
+  Wf = 3  # filter width
+  stride = 1
+  pad = 1
+  X = rand(rows=N, cols=C*Hin*Win, pdf="normal")
+
+  # Create layer
+  [W, b] = conv::init(F, C, Hf, Wf)
+
+  # Forward
+  [out, Hout, Wout] = conv::forward(X, W, b, C, Hin, Win, Hf, Wf, stride, stride, pad, pad)
+  [out_simple, Hout_simple, Wout_simple] = conv_simple::forward(X, W, b, C, Hin, Win, Hf, Wf,
+                                                                stride, stride, pad, pad)
+  [out_builtin, Hout_builtin, Wout_builtin] = conv_builtin::forward(X, W, b, C, Hin, Win, Hf, Wf,
+                                                                    stride, stride, pad, pad)
+
+  # Equivalency check
+  out = matrix(out, rows=1, cols=N*F*Hout*Wout)
+  out_simple = matrix(out_simple, rows=1, cols=N*F*Hout*Wout)
+  out_builtin = matrix(out_builtin, rows=1, cols=N*F*Hout*Wout)
+  for (i in 1:length(out)) {
+    rel_error = util::check_rel_error(as.scalar(out[1,i]),
+                                      as.scalar(out_simple[1,i]), 1e-10, 1e-12)
+    rel_error = util::check_rel_error(as.scalar(out[1,i]),
+                                      as.scalar(out_builtin[1,i]), 1e-10, 1e-12)
+  }
+}
+
+cross_entropy_loss = function() {
+  /*
+   * Test for the `cross-entropy` loss function.
+   *
+   * Here we make sure that the cross-entropy loss function does
+   * not propagate `infinity` values in the case that a prediction is
+`  * exactly equal to 0.
+   */
+  print("Testing the cross-entropy loss function with zero-valued predictions.")
+
+  # Generate data
+  N = 3 # num examples
+  K = 10 # num targets
+  pred = matrix(0, rows=N, cols=K)
+  y = rand(rows=N, cols=K, min=0, max=1, pdf="uniform")
+  y = y / rowSums(y)  # normalized probs
+
+  loss = cross_entropy_loss::forward(pred, y)
+
+  inf = 1/0
+  if (loss == inf) {
+    print("ERROR: The cross-entropy loss function ouptuts infinity for all-zero predictions.")
+  }
+}
+
+im2col = function() {
+  /*
+   * Test for the `im2col` and `col2im` functions.
+   */
+  print("Testing the im2col and col2im functions.")
+
+	# Generate data
+  C = 3  # num channels
+  Hin = 5  # input height
+  Win = 5  # input width
+  Hf = 3  # filter height
+  Wf = 3  # filter width
+  stride = 2
+  pad = (Hin * stride - Hin + Hf - stride) / 2
+  Hout = as.integer((Hin + 2 * pad - Hf) / stride + 1)
+  Wout = as.integer((Win + 2 * pad - Wf) / stride + 1)
+  x = rand(rows=C, cols=Hin*Win)
+
+  # pad
+  x_pad = util::pad_image(x, Hin, Win, pad, pad, 0)
+
+  # im2col
+  x_cols = util::im2col(x_pad, Hin+2*pad, Win+2*pad, Hf, Wf, stride, stride)
+
+  # col2im
+  x_pad2 = util::col2im(x_cols, C, Hin+2*pad, Win+2*pad, Hf, Wf, stride, stride, "none")
+
+  # Equivalency check
+  equivalent = util::all_equal(x_pad, x_pad2)
+  if (!equivalent) {
+    print("ERROR: im2col and then col2im does not yield the original image.")
+  }
+}
+
+padding = function() {
+  /*
+   * Test for the `pad_image` and `unpad_image` functions.
+   */
+  print("Testing the padding and unpadding functions.")
+
+  # Generate data
+  C = 3  # num channels
+  Hin = 5  # input height
+  Win = 5  # input width
+  pad = 3  # padding
+  x = rand(rows=C, cols=Hin*Win)
+
+  # Pad image
+  x_pad = util::pad_image(x, Hin, Win, pad, pad, 0)
+
+  # Check for padded rows & columns
+  for (c in 1:C) {
+    x_pad_slice = matrix(x_pad[c,], rows=Hin+2*pad, cols=Win+2*pad)
+    for (i in 1:pad) {
+      rowsum = sum(x_pad_slice[i,])
+      colsum = sum(x_pad_slice[,i])
+      if (rowsum != 0)
+        print("ERROR: Padding was not applied to row " + i + ".")
+      if (colsum != 0)
+        print("ERROR: Padding was not applied to column " + i + ".")
+    }
+  }
+
+  # Unpad image
+  x1 = util::unpad_image(x_pad, Hin, Win, pad, pad)
+
+  # Equivalency check
+  equivalent = util::all_equal(x, x1)
+  if (!equivalent) {
+    print("ERROR: Padding and then unpadding does not yield the original image.")
+  }
+}
+
+max_pool = function() {
+  /*
+   * Test for the `max_pool` functions.
+   */
+  print("Testing the max pool functions.")
+
+  # Generate data
+  N = 2  # num examples
+  C = 3  # num channels
+  Hin = 8  # input height
+  Win = 8  # input width
+  Hf = 2  # filter height
+  Wf = 2  # filter width
+  stride = 2
+  X = rand(rows=N, cols=C*Hin*Win, pdf="normal")
+
+  for (padh in 0:3) {
+    for (padw in 0:3) {
+      print(" - Testing w/ padh="+padh+" & padw="+padw+".")
+      if (1==1) {}  # force correct printing
+      print("   - Testing forward")
+      [out, Hout, Wout] = max_pool::forward(X, C, Hin, Win, Hf, Wf, stride, stride, padh, padw)
+      [out_simple, Hout_simple, Wout_simple] = max_pool_simple::forward(X, C, Hin, Win, Hf, Wf,
+                                                                        stride, stride, padh, padw)
+      [out_builtin, Hout_builtin, Wout_builtin] = max_pool_builtin::forward(X, C, Hin, Win, Hf, Wf,
+                                                                            stride, stride,
+                                                                            padh, padw)
+
+      # Equivalency check
+      out = matrix(out, rows=1, cols=N*C*Hout*Wout)
+      out_simple = matrix(out_simple, rows=1, cols=N*C*Hout*Wout)
+      out_builtin = matrix(out_builtin, rows=1, cols=N*C*Hout*Wout)
+      for (i in 1:length(out)) {
+        rel_error = util::check_rel_error(as.scalar(out[1,i]),
+                                          as.scalar(out_simple[1,i]), 1e-10, 1e-12)
+        rel_error = util::check_rel_error(as.scalar(out[1,i]),
+                                          as.scalar(out_builtin[1,i]), 1e-10, 1e-12)
+      }
+
+      print("   - Testing backward")
+      dout = rand(rows=N, cols=C*Hout*Wout, pdf="normal")
+      dX = max_pool::backward(dout, Hout, Wout, X, C, Hin, Win, Hf, Wf, stride, stride, padh, padw)
+      dX_simple = max_pool_simple::backward(dout, Hout_simple, Wout_simple, X, C, Hin, Win, Hf, Wf,
+                                            stride, stride, padh, padw)
+      dX_builtin = max_pool_builtin::backward(dout, Hout_builtin, Wout_builtin, X, C, Hin, Win,
+                                              Hf, Wf, stride, stride, padh, padw)
+
+      # Equivalency check
+      dX = matrix(dX, rows=1, cols=N*C*Hin*Win)
+      dX_simple = matrix(dX_simple, rows=1, cols=N*C*Hin*Win)
+      dX_builtin = matrix(dX_builtin, rows=1, cols=N*C*Hin*Win)
+      for (i in 1:length(dX)) {
+        rel_error = util::check_rel_error(as.scalar(dX[1,i]),
+                                          as.scalar(dX_simple[1,i]), 1e-10, 1e-12)
+        rel_error = util::check_rel_error(as.scalar(dX[1,i]),
+                                          as.scalar(dX_builtin[1,i]), 1e-10, 1e-12)
+      }
+    }
+  }
+
+  # ---
+  print(" - Testing for correct behavior against known answer w/ pad=0.")
+  # generate data
+  # -- channel 1
+  #  1  2  3  4
+  #  5  6  7  8
+  #  9 10 11 12
+  # 13 14 15 16
+  # -- channel 2
+  #  1  5  9 13
+  #  2  6 10 14
+  #  3  7 11 15
+  #  4  8 12 16
+  C = 2  # num channels
+  Hin = 4  # input height
+  Win = 4  # input width
+  X = matrix(seq(1,16,1), rows=Hin, cols=Win)
+  X = matrix(rbind(X, t(X)), rows=1, cols=C*Hin*Win)  # C=2
+  X = rbind(X, X)  # n=2
+  pad = 0
+
+  # forward
+  [out, Hout, Wout] = max_pool::forward(X, C, Hin, Win, Hf, Wf, stride, stride, pad, pad)
+  [out_simple, Hout_simple, Wout_simple] = max_pool_simple::forward(X, C, Hin, Win, Hf, Wf,
+                                                                    stride, stride, pad, pad)
+  [out_builtin, Hout_builtin, Wout_builtin] = max_pool_builtin::forward(X, C, Hin, Win, Hf, Wf,
+                                                                        stride, stride, pad, pad)
+
+  # equivalency check
+  # -- channel 1
+  #   6  8
+  #  14 16
+  # -- channel 2
+  #  6  14
+  #  8  16
+  target = matrix("6 8 14 16 6 14 8 16", rows=1, cols=C*Hout*Wout)
+  target = rbind(target, target)  # n=2
+  tmp = util::check_all_equal(out, target)
+  tmp = util::check_all_equal(out_simple, target)
+  tmp = util::check_all_equal(out_builtin, target)
+
+  print(" - Testing for correct behavior against known answer w/ pad=1.")
+  # generate data
+  # -- channel 1
+  #  0  0  0  0  0  0
+  #  0  1  2  3  4  0
+  #  0  5  6  7  8  0
+  #  0  9 10 11 12  0
+  #  0 13 14 15 16  0
+  #  0  0  0  0  0  0
+  # -- channel 2
+  #  0  0  0  0  0  0
+  #  0  1  5  9 13  0
+  #  0  2  6 10 14  0
+  #  0  3  7 11 15  0
+  #  0  4  8 12 16  0
+  #  0  0  0  0  0  0
+  pad = 1
+
+  # forward
+  [out, Hout, Wout] = max_pool::forward(X, C, Hin, Win, Hf, Wf, stride, stride, pad, pad)
+  [out_simple, Hout_simple, Wout_simple] = max_pool_simple::forward(X, C, Hin, Win, Hf, Wf,
+                                                                    stride, stride, pad, pad)
+  [out_builtin, Hout_builtin, Wout_builtin] = max_pool_builtin::forward(X, C, Hin, Win, Hf, Wf,
+                                                                        stride, stride, pad, pad)
+
+  # equivalency check
+  # -- channel 1
+  #  1  3  4
+  #  9 11 12
+  # 13 15 16
+  # -- channel 2
+  #  1  9 13
+  #  3 11 15
+  #  4 12 16
+  target = matrix("1 3 4 9 11 12 13 15 16 1 9 13 3 11 15 4 12 16", rows=1, cols=C*Hout*Wout)
+  target = rbind(target, target)  # n=2
+  tmp = util::check_all_equal(out, target)
+  tmp = util::check_all_equal(out_simple, target)
+  tmp = util::check_all_equal(out_builtin, target)
+
+  print(" - Testing for correct behavior against known answer w/ all negative matrix w/ pad=0.")
+  # generate data
+  # -- channel 1
+  #  -1  -2  -3  -4
+  #  -5  -6  -7  -8
+  #  -9 -10 -11 -12
+  # -13 -14 -15 -16
+  # -- channel 2
+  #  -1  -5  -9 -13
+  #  -2  -6 -10 -14
+  #  -3  -7 -11 -15
+  #  -4  -8 -12 -16
+  X = X * -1
+  pad = 0
+
+  # forward
+  [out, Hout, Wout] = max_pool::forward(X, C, Hin, Win, Hf, Wf, stride, stride, pad, pad)
+  [out_simple, Hout_simple, Wout_simple] = max_pool_simple::forward(X, C, Hin, Win, Hf, Wf,
+                                                                    stride, stride, pad, pad)
+  [out_builtin, Hout_builtin, Wout_builtin] = max_pool_builtin::forward(X, C, Hin, Win, Hf, Wf,
+                                                                        stride, stride, pad, pad)
+
+  # equivalency check
+  # -- channel 1
+  #  -1  -3
+  #  -9 -11
+  # -- channel 2
+  #  -1  -9
+  #  -3 -11
+  target = matrix("-1 -3 -9 -11 -1 -9 -3 -11", rows=1, cols=C*Hout*Wout)
+  target = rbind(target, target)  # n=2
+  tmp = util::check_all_equal(out, target)
+  tmp = util::check_all_equal(out_simple, target)
+  tmp = util::check_all_equal(out_builtin, target)
+
+
+  print(" - Testing for correct behavior against known answer w/ all negative matrix w/ pad=1.")
+  # generate data
+  # -- channel 1
+  #  0   0   0   0   0  0
+  #  0  -1  -2  -3  -4  0
+  #  0  -5  -6  -7  -8  0
+  #  0  -9 -10 -11 -12  0
+  #  0 -13 -14 -15 -16  0
+  #  0   0   0   0   0  0
+  # -- channel 2
+  #  0   0   0   0   0  0
+  #  0  -1  -5  -9 -13  0
+  #  0  -2  -6 -10 -14  0
+  #  0  -3  -7 -11 -15  0
+  #  0  -4  -8 -12 -16  0
+  #  0   0   0   0   0  0
+  pad = 1
+
+  # forward
+  [out, Hout, Wout] = max_pool::forward(X, C, Hin, Win, Hf, Wf, stride, stride, pad, pad)
+  [out_simple, Hout_simple, Wout_simple] = max_pool_simple::forward(X, C, Hin, Win, Hf, Wf,
+                                                                    stride, stride, pad, pad)
+  [out_builtin, Hout_builtin, Wout_builtin] = max_pool_builtin::forward(X, C, Hin, Win, Hf, Wf,
+                                                                        stride, stride, pad, pad)
+
+  # equivalency check
+  # -- channel 1
+  #  0  0  0
+  #  0 -6  0
+  #  0  0  0
+  # -- channel 2
+  #  0  0  0
+  #  0 -6  0
+  #  0  0  0
+  target = matrix("-1 -2 -4 -5 -6 -8 -13 -14 -16 -1 -5 -13 -2 -6 -14 -4 -8 -16", rows=1, cols=C*Hout*Wout)
+  target = rbind(target, target)  # n=2
+  tmp = util::check_all_equal(out, target)
+  tmp = util::check_all_equal(out_simple, target)
+  tmp = util::check_all_equal(out_builtin, target)
+}
+
+tanh = function() {
+  /*
+   * Test for the `tanh` forward function.
+   */
+  print("Testing the tanh forward function.")
+
+  # Generate data
+  N = 2  # num examples
+  C = 3  # num channels
+  X = rand(rows=N, cols=C, pdf="normal")
+
+  out = tanh::forward(X)
+  out_ref = (exp(X) - exp(-X)) / (exp(X) + exp(-X))
+
+  # Equivalency check
+  for (i in 1:nrow(out)) {
+    for (j in 1:ncol(out)) {
+      rel_error = util::check_rel_error(as.scalar(out[i,j]), as.scalar(out_ref[i,j]), 1e-10, 1e-12)
+    }
+  }
+}
+

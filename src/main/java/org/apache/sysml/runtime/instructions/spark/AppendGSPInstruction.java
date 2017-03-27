@@ -29,7 +29,7 @@ import org.apache.spark.api.java.function.PairFunction;
 import scala.Tuple2;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
+import org.apache.sysml.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysml.runtime.functionobjects.OffsetColumnIndex;
@@ -77,7 +77,7 @@ public class AppendGSPInstruction extends BinarySPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		// general case append (map-extend, aggregate)
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
@@ -101,10 +101,7 @@ public class AppendGSPInstruction extends BinarySPInstruction
 		sec.addLineageRDD(output.getName(), input1.getName());
 		sec.addLineageRDD(output.getName(), input2.getName());
 	}
-	
-	/**
-	 * 
-	 */
+
 	public static class MergeWithShiftedBlocks implements PairFunction<Tuple2<MatrixIndexes,Tuple2<Iterable<MatrixBlock>,Iterable<MatrixBlock>>>, MatrixIndexes, MatrixBlock> 
 	{
 		private static final long serialVersionUID = 848955582909209400L;
@@ -148,7 +145,7 @@ public class AppendGSPInstruction extends BinarySPInstruction
 			{
 				// This case occurs for last block of LHS matrix
 				MatrixBlock tmp = new MatrixBlock(secondBlk.getNumRows(), secondBlk.getNumColumns(), true);
-				firstBlk = tmp.leftIndexingOperations(firstBlk, 0, firstBlk.getNumRows()-1, 0, firstBlk.getNumColumns()-1, new MatrixBlock(), true);
+				firstBlk = tmp.leftIndexingOperations(firstBlk, 0, firstBlk.getNumRows()-1, 0, firstBlk.getNumColumns()-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 			}
 			
 			//merge with sort since blocks might be in any order
@@ -157,10 +154,7 @@ public class AppendGSPInstruction extends BinarySPInstruction
 		}
 		
 	}
-	
-	/**
-	 * 
-	 */
+
 	public static class ShiftMatrix implements PairFlatMapFunction<Tuple2<MatrixIndexes,MatrixBlock>, MatrixIndexes,MatrixBlock> 
 	{
 		private static final long serialVersionUID = 3524189212798209172L;
@@ -182,7 +176,7 @@ public class AppendGSPInstruction extends BinarySPInstruction
 		}
 
 		@Override
-		public Iterable<Tuple2<MatrixIndexes, MatrixBlock>> call(Tuple2<MatrixIndexes, MatrixBlock> kv) 
+		public Iterator<Tuple2<MatrixIndexes, MatrixBlock>> call(Tuple2<MatrixIndexes, MatrixBlock> kv) 
 			throws Exception 
 		{
 			//common preparation
@@ -200,19 +194,19 @@ public class AppendGSPInstruction extends BinarySPInstruction
 				if(cutAt >= in.getNumColumns()) {
 					// The block is too small to be cut
 					MatrixBlock firstBlk = new MatrixBlock(in.getNumRows(), lblen1, true);
-					firstBlk = firstBlk.leftIndexingOperations(in, 0, in.getNumRows()-1, lblen1-in.getNumColumns(), lblen1-1, new MatrixBlock(), true);
+					firstBlk = firstBlk.leftIndexingOperations(in, 0, in.getNumRows()-1, lblen1-in.getNumColumns(), lblen1-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 					retVal.add(new Tuple2<MatrixIndexes, MatrixBlock>(firstIndex, firstBlk));
 				}
 				else {
 					// Since merge requires the dimensions matching, shifting = slicing + left indexing
 					MatrixBlock firstSlicedBlk = in.sliceOperations(0, in.getNumRows()-1, 0, cutAt-1, new MatrixBlock());
 					MatrixBlock firstBlk = new MatrixBlock(in.getNumRows(), lblen1, true);
-					firstBlk = firstBlk.leftIndexingOperations(firstSlicedBlk, 0, in.getNumRows()-1, _shiftBy, _blen-1, new MatrixBlock(), true);
+					firstBlk = firstBlk.leftIndexingOperations(firstSlicedBlk, 0, in.getNumRows()-1, _shiftBy, _blen-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 					
 					MatrixBlock secondSlicedBlk = in.sliceOperations(0, in.getNumRows()-1, cutAt, in.getNumColumns()-1, new MatrixBlock());
 					int llen2 = UtilFunctions.computeBlockSize(_outlen, secondIndex.getColumnIndex(), _blen);
 					MatrixBlock secondBlk = new MatrixBlock(in.getNumRows(), llen2, true);
-					secondBlk = secondBlk.leftIndexingOperations(secondSlicedBlk, 0, in.getNumRows()-1, 0, secondSlicedBlk.getNumColumns()-1, new MatrixBlock(), true);
+					secondBlk = secondBlk.leftIndexingOperations(secondSlicedBlk, 0, in.getNumRows()-1, 0, secondSlicedBlk.getNumColumns()-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 					
 					retVal.add(new Tuple2<MatrixIndexes, MatrixBlock>(firstIndex, firstBlk));
 					retVal.add(new Tuple2<MatrixIndexes, MatrixBlock>(secondIndex, secondBlk));
@@ -227,26 +221,26 @@ public class AppendGSPInstruction extends BinarySPInstruction
 				if(cutAt >= in.getNumRows()) {
 					// The block is too small to be cut
 					MatrixBlock firstBlk = new MatrixBlock(lblen1, in.getNumColumns(), true);
-					firstBlk = firstBlk.leftIndexingOperations(in, lblen1-in.getNumRows(), lblen1-1, 0, in.getNumColumns()-1, new MatrixBlock(), true);
+					firstBlk = firstBlk.leftIndexingOperations(in, lblen1-in.getNumRows(), lblen1-1, 0, in.getNumColumns()-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 					retVal.add(new Tuple2<MatrixIndexes, MatrixBlock>(firstIndex, firstBlk));
 				}
 				else {
 					// Since merge requires the dimensions matching, shifting = slicing + left indexing
 					MatrixBlock firstSlicedBlk = in.sliceOperations(0, cutAt-1, 0, in.getNumColumns()-1, new MatrixBlock());
 					MatrixBlock firstBlk = new MatrixBlock(lblen1, in.getNumColumns(), true);
-					firstBlk = firstBlk.leftIndexingOperations(firstSlicedBlk, _shiftBy, _blen-1, 0, in.getNumColumns()-1, new MatrixBlock(), true);
+					firstBlk = firstBlk.leftIndexingOperations(firstSlicedBlk, _shiftBy, _blen-1, 0, in.getNumColumns()-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 					
 					MatrixBlock secondSlicedBlk = in.sliceOperations(cutAt, in.getNumRows()-1, 0, in.getNumColumns()-1, new MatrixBlock());
 					int lblen2 = UtilFunctions.computeBlockSize(_outlen, secondIndex.getRowIndex(), _blen);
 					MatrixBlock secondBlk = new MatrixBlock(lblen2, in.getNumColumns(), true);
-					secondBlk = secondBlk.leftIndexingOperations(secondSlicedBlk, 0, secondSlicedBlk.getNumRows()-1, 0, in.getNumColumns()-1, new MatrixBlock(), true);
+					secondBlk = secondBlk.leftIndexingOperations(secondSlicedBlk, 0, secondSlicedBlk.getNumRows()-1, 0, in.getNumColumns()-1, new MatrixBlock(), UpdateType.INPLACE_PINNED);
 					
 					retVal.add(new Tuple2<MatrixIndexes, MatrixBlock>(firstIndex, firstBlk));
 					retVal.add(new Tuple2<MatrixIndexes, MatrixBlock>(secondIndex, secondBlk));
 				}
 			}
 			
-			return retVal;
+			return retVal.iterator();
 		}
 	}
 }

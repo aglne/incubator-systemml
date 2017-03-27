@@ -21,8 +21,8 @@ package org.apache.sysml.runtime.instructions;
 
 import org.apache.sysml.lops.LopProperties.ExecType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.cp.CPInstruction.CPINSTRUCTION_TYPE;
+import org.apache.sysml.runtime.instructions.gpu.GPUInstruction.GPUINSTRUCTION_TYPE;
 import org.apache.sysml.runtime.instructions.mr.MRInstruction.MRINSTRUCTION_TYPE;
 import org.apache.sysml.runtime.instructions.spark.SPInstruction.SPINSTRUCTION_TYPE;
 
@@ -30,7 +30,7 @@ import org.apache.sysml.runtime.instructions.spark.SPInstruction.SPINSTRUCTION_T
 public class InstructionParser 
 {		
 	public static Instruction parseSingleInstruction ( String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{	
 		if ( str == null || str.isEmpty() )
 			return null;
@@ -40,17 +40,28 @@ public class InstructionParser
 			|| execType.equalsIgnoreCase(ExecType.CP_FILE.toString()) ) 
 		{
 			CPINSTRUCTION_TYPE cptype = InstructionUtils.getCPType(str); 
+			if( cptype == null )
+				throw new DMLRuntimeException("Unknown CP instruction: " + str);
 			return CPInstructionParser.parseSingleInstruction (cptype, str);
 		}
-		else if (   execType.equalsIgnoreCase(ExecType.SPARK.toString()) ) 
+		else if ( execType.equalsIgnoreCase(ExecType.SPARK.toString()) ) 
 		{
 			SPINSTRUCTION_TYPE sptype = InstructionUtils.getSPType(str); 
+			if( sptype == null )
+				throw new DMLRuntimeException("Unknown SPARK instruction: " + str);
 			return SPInstructionParser.parseSingleInstruction (sptype, str);
+		}
+		else if ( execType.equalsIgnoreCase(ExecType.GPU.toString()) ) 
+		{
+			GPUINSTRUCTION_TYPE gputype = InstructionUtils.getGPUType(str); 
+			if( gputype == null )
+				throw new DMLRuntimeException("Unknown GPU instruction: " + str);
+			return GPUInstructionParser.parseSingleInstruction (gputype, str);
 		}
 		else if ( execType.equalsIgnoreCase("MR") ) {
 			MRINSTRUCTION_TYPE mrtype = InstructionUtils.getMRType(str); 
-			if ( mrtype == null )
-				throw new DMLRuntimeException("Can not determine MRType for instruction: " + str);
+			if( mrtype == null )
+				throw new DMLRuntimeException("Unknown MR instruction: " + str);
 			return MRInstructionParser.parseSingleInstruction (mrtype, str);
 		}
 		else {
@@ -59,7 +70,7 @@ public class InstructionParser
 	}
 	
 	public static Instruction[] parseMixedInstructions ( String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		if ( str == null || str.isEmpty() )
 			return null;

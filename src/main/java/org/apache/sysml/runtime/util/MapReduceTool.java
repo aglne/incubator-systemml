@@ -25,7 +25,11 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStreamWriter;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 
+import org.apache.commons.lang.StringUtils;
+import org.apache.commons.lang3.StringEscapeUtils;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FSDataInputStream;
@@ -40,8 +44,10 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.parser.DataExpression;
+import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.io.MatrixReader;
 import org.apache.sysml.runtime.io.MatrixReaderFactory;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
@@ -53,11 +59,14 @@ import org.apache.sysml.runtime.matrix.data.NumItemsByEachReducerMetaData;
 import org.apache.sysml.runtime.matrix.data.OutputInfo;
 import org.apache.sysml.runtime.matrix.mapred.MRConfigurationNames;
 import org.apache.sysml.runtime.matrix.sort.ReadWithZeros;
+import org.apache.wink.json4j.JSONException;
 import org.apache.wink.json4j.OrderedJSONObject;
 
 
 public class MapReduceTool 
 {
+	private static final int MAX_DELETE_RETRIES = 10;
+	
 	private static final Log LOG = LogFactory.getLog(MapReduceTool.class.getName());
 	private static JobConf _rJob = null; //cached job conf for read-only operations
 	
@@ -82,21 +91,7 @@ public class MapReduceTool
 		// remove all the leading 0s
 		return String.valueOf(Long.parseLong(nodePrefix));
 	}
-	
-	@Deprecated
-	public static String getUniqueKeyPerTaskWithLeadingZros(JobConf job, boolean inMapper) {
-		String nodePrefix = job.get(MRConfigurationNames.MR_TASK_ATTEMPT_ID);
-		int i;
-		if (inMapper)
-			i = nodePrefix.indexOf("_m_");
-		else
-			i = nodePrefix.indexOf("_r_");
-		int j = nodePrefix.lastIndexOf("_");
-		nodePrefix = nodePrefix.substring(i + 3, j);
-		return nodePrefix;
-	}
 
-	
 	public static int getUniqueTaskId(JobConf job) {
 		//TODO: investigate ID pattern, required for parallel jobs
 		/*String nodePrefix = job.get(MRConfigurationNames.MR_TASK_ATTEMPT_ID); 
@@ -115,29 +110,36 @@ public class MapReduceTool
 	}
 
 	public static boolean existsFileOnHDFS(String fname){
-		boolean ret = true;
-		try{
-			Path outpath = new Path(fname);
-			ret = FileSystem.get(_rJob).exists(outpath);
+		try {
+			return FileSystem.get(_rJob)
+				.exists(new Path(fname));
 		}
-		catch(Exception ex)
-		{
-			LOG.error("Exception caught in existsFileOnHDFS", ex);
-			ret = false;
+		catch(Exception ex) {
+			LOG.error("Failed check existsFileOnHDFS.", ex);
 		}
-		return ret;
+		return false;
 	}
 	
-	public static void deleteFileIfExistOnHDFS(Path outpath, JobConf job) throws IOException {
-		if (FileSystem.get(job).exists(outpath)) {
-			FileSystem.get(job).delete(outpath, true);
+	public static boolean isDirectory(String fname) {
+		try {
+			return FileSystem.get(_rJob)
+				.isDirectory(new Path(fname));
 		}
+		catch(Exception ex) {
+			LOG.error("Failed check isDirectory.", ex);
+		}
+		return false;
 	}
 	
-	public static void deleteFileIfExistOnLFS(Path outpath, JobConf job) throws IOException {
-		if (FileSystem.getLocal(job).exists(outpath)) {
-			FileSystem.getLocal(job).delete(outpath, true);
+	public static FileStatus[] getDirectoryListing(String fname) {
+		try {
+			return FileSystem.get(_rJob)
+				.listStatus(new Path(fname));
 		}
+		catch(Exception ex) {
+			LOG.error("Failed listing of directory contents.", ex);
+		}
+		return new FileStatus[0];
 	}
 
 	public static void deleteFileWithMTDIfExistOnHDFS(String fname)  throws IOException {
@@ -146,19 +148,24 @@ public class MapReduceTool
 	}
 	
 	public static void deleteFileIfExistOnHDFS(String dir) throws IOException {
-		Path outpath = new Path(dir);
-		FileSystem fs = FileSystem.get(_rJob);
-		if (fs.exists(outpath)) {
-			//System.err.println("Deleting " + outpath + " ... ");
-			fs.delete(outpath, true);
-		}
+		deleteFileIfExists(FileSystem.get(_rJob), new Path(dir));
 	}
 
-	public static boolean isHDFSDirectory(String dir) throws IOException {
-		FileSystem fs = FileSystem.get(_rJob);
-		Path pth = new Path(dir);
-		FileStatus fstat = fs.getFileStatus(pth);
-		return fstat.isDirectory();
+	public static void deleteFileIfExistOnHDFS(Path outpath, JobConf job) throws IOException {
+		deleteFileIfExists(FileSystem.get(job), outpath);
+	}
+	
+	public static void deleteFileIfExistOnLFS(Path outpath, JobConf job) throws IOException {
+		deleteFileIfExists(FileSystem.getLocal(job), outpath);
+	}
+	
+	private static void deleteFileIfExists(FileSystem fs, Path outpath) throws IOException {
+		if( fs.exists(outpath) ) {
+			int retries = MAX_DELETE_RETRIES;
+			while( !fs.delete(outpath, true) && retries > 0 ) {
+				retries--;
+			}
+		}
 	}
 
 	public static boolean isHDFSFileEmpty(String dir) throws IOException {
@@ -225,54 +232,11 @@ public class MapReduceTool
 	}
 
 	/**
-	 * 
-	 * @param dir
-	 * @return
-	 * @throws IOException
-	 */
-	public static String getSubDirs(String dir) 
-		throws IOException 
-	{
-		FileSystem fs = FileSystem.get(_rJob); 
-		FileStatus[] files = fs.listStatus(new Path(dir));
-		StringBuilder sb = new StringBuilder();
-		for (FileStatus file : files) {
-			if ( sb.length()>0 )
-				sb.append(",");
-			sb.append(file.getPath().toString());
-		}
-		return sb.toString();
-	}
-
-	/**
-	 * 
-	 * @param dir
-	 * @return
-	 * @throws IOException
-	 */
-	public static String getSubDirsIgnoreLogs(String dir) 
-		throws IOException 
-	{
-		FileSystem fs = FileSystem.get(_rJob);
-		FileStatus[] files = fs.listStatus(new Path(dir));
-		StringBuilder sb = new StringBuilder();
-		for (FileStatus file : files) {
-			String name = file.getPath().toString();
-			if (name.contains("_logs"))
-				continue;
-			if( sb.length()>0 )
-				sb.append(",");
-			sb.append(name);
-		}
-		return sb.toString();
-	}
-	
-	/**
 	 * Returns the size of a file or directory on hdfs in bytes.
 	 * 
-	 * @param path
-	 * @return
-	 * @throws IOException
+	 * @param path file system path
+	 * @return file size
+	 * @throws IOException if IOException occurs
 	 */
 	public static long getFilesizeOnHDFS( Path path ) 
 		throws IOException
@@ -295,54 +259,49 @@ public class MapReduceTool
         return br;
 	}
 	
-	public static double readDoubleFromHDFSFile(String filename) 
-		throws IOException 
-	{
-		BufferedReader br = setupInputFile(filename);
-		String line = br.readLine();
-		br.close();
-		if( line == null )
-			throw new IOException("Empty file on hdfs: "+filename);
-		return Double.parseDouble(line);
+	public static double readDoubleFromHDFSFile(String filename) throws IOException {
+		return (Double)readObjectFromHDFSFile(filename, ValueType.DOUBLE);
 	}
 	
-	public static long readIntegerFromHDFSFile(String filename) 
-		throws IOException 
-	{
-		BufferedReader br = setupInputFile(filename);
-		String line = br.readLine();
-		br.close();
-		if( line == null )
-			throw new IOException("Empty file on hdfs: "+filename);
-		return Long.parseLong(line);
+	public static long readIntegerFromHDFSFile(String filename) throws IOException {
+		return (Long)readObjectFromHDFSFile(filename, ValueType.INT);
 	}
 	
-	public static boolean readBooleanFromHDFSFile(String filename) 
-		throws IOException 
-	{
-		BufferedReader br = setupInputFile(filename);
-		String line = br.readLine();
-		br.close();
-		if( line == null )
-			throw new IOException("Empty file on hdfs: "+filename);
-		return Boolean.parseBoolean(line);
+	public static boolean readBooleanFromHDFSFile(String filename) throws IOException {
+		return (Boolean)readObjectFromHDFSFile(filename, ValueType.BOOLEAN);
 	}
 	
 	public static String readStringFromHDFSFile(String filename) 
 		throws IOException 
 	{
-		BufferedReader br = setupInputFile(filename);
-		// handle multi-line strings in the HDFS file
 		StringBuilder sb = new StringBuilder();
-		String line = null;
-		while ( (line = br.readLine()) != null ) {
-			sb.append(line);
-			sb.append("\n");
+		try( BufferedReader br = setupInputFile(filename) ) {
+			// handle multi-line strings in the HDFS file
+			String line = null;
+			while ( (line = br.readLine()) != null ) {
+				sb.append(line);
+				sb.append("\n");
+			}
 		}
-		br.close();
 		
 		//return string without last character
 		return sb.substring(0, sb.length()-1);
+	}
+	
+	public static Object readObjectFromHDFSFile(String filename, ValueType vt) throws IOException {
+		String line = null;
+		try( BufferedReader br = setupInputFile(filename) ) {
+			line = br.readLine();
+		}
+		if( line == null )
+			throw new IOException("Empty file on hdfs: "+filename);
+		
+		switch( vt ) {
+			case BOOLEAN: return Boolean.parseBoolean(line);
+			case DOUBLE: return Double.parseDouble(line);
+			case INT: return Long.parseLong(line);
+			default: return line;
+		}
 	}
 		
 	private static BufferedWriter setupOutputFile ( String filename ) throws IOException {
@@ -353,47 +312,40 @@ public class MapReduceTool
 	}
 	
 	public static void writeDoubleToHDFS ( double d, String filename ) throws IOException {
-        BufferedWriter br = setupOutputFile(filename);
-        String line = "" + d;
-        br.write(line);
-        br.close();
+		writeObjectToHDFS(d, filename);
 	}
 	
 	public static void writeIntToHDFS ( long i, String filename ) throws IOException {
-        BufferedWriter br = setupOutputFile(filename);
-        String line = "" + i;
-        br.write(line);
-        br.close();
+	    writeObjectToHDFS(i, filename);
 	}
 	
 	public static void writeBooleanToHDFS ( boolean b, String filename ) throws IOException {
-        BufferedWriter br = setupOutputFile(filename);
-        String line = "" + b;
-        br.write(line);
-        br.close();
+	    writeObjectToHDFS(b, filename);
 	}
 	
 	public static void writeStringToHDFS ( String s, String filename ) throws IOException {
-        BufferedWriter br = setupOutputFile(filename);
-        String line = "" + s;
-        br.write(line);
-        br.close();
+		writeObjectToHDFS(s, filename);
+	}
+	
+	public static void writeObjectToHDFS ( Object obj, String filename ) throws IOException {
+		try( BufferedWriter br = setupOutputFile(filename) ) {
+			br.write(obj.toString());
+		}
 	}
 	
 	public static void writeDimsFile ( String filename, byte[] unknownFlags, long[] maxRows, long[] maxCols) throws IOException {
-        BufferedWriter br = setupOutputFile(filename);
-        StringBuilder line = new StringBuilder();
-        for ( int i=0; i < unknownFlags.length; i++ ) {
-        	if ( unknownFlags[i]  != (byte)0 ) {
-        		line.append(i);
-        		line.append(" " + maxRows[i]);
-        		line.append(" " + maxCols[i]);
-        		line.append("\n");
-        	}
+		try( BufferedWriter br = setupOutputFile(filename) ) {
+	        StringBuilder line = new StringBuilder();
+	        for ( int i=0; i < unknownFlags.length; i++ ) {
+	        	if ( unknownFlags[i]  != (byte)0 ) {
+	        		line.append(i);
+	        		line.append(" " + maxRows[i]);
+	        		line.append(" " + maxCols[i]);
+	        		line.append("\n");
+	        	}
+	        }
+	        br.write(line.toString());
         }
-        br.write(line.toString());
-        br.close();
-        //System.out.println("Finished writing dimsFile: " + filename);
 	}
 	
 	public static MatrixCharacteristics[] processDimsFiles(String dir, MatrixCharacteristics[] stats) 
@@ -412,21 +364,18 @@ public class MapReduceTool
 			FileStatus[] files = fs.listStatus(pt);
 			for ( int i=0; i < files.length; i++ ) {
 				Path filePath = files[i].getPath();
-				//System.out.println("Processing dims file: " + filePath.toString());
-				BufferedReader br = setupInputFile(filePath.toString());
-				
-				String line = "";
-				while((line=br.readLine()) != null ) {
-					String[] parts = line.split(" ");
-					int resultIndex = Integer.parseInt(parts[0]);
-					long maxRows = Long.parseLong(parts[1]);
-					long maxCols = Long.parseLong(parts[2]);
-					
-					stats[resultIndex].setDimension( (stats[resultIndex].getRows() < maxRows ? maxRows : stats[resultIndex].getRows()), 
-							                         (stats[resultIndex].getCols() < maxCols ? maxCols : stats[resultIndex].getCols()) );
+				try( BufferedReader br = setupInputFile(filePath.toString()) ) {
+					String line = "";
+					while((line=br.readLine()) != null ) {
+						String[] parts = line.split(" ");
+						int resultIndex = Integer.parseInt(parts[0]);
+						long maxRows = Long.parseLong(parts[1]);
+						long maxCols = Long.parseLong(parts[2]);
+						
+						stats[resultIndex].setDimension( (stats[resultIndex].getRows() < maxRows ? maxRows : stats[resultIndex].getRows()), 
+								                         (stats[resultIndex].getCols() < maxCols ? maxCols : stats[resultIndex].getCols()) );
+					}
 				}
-				
-				br.close();
 			}
 		}
 		else 
@@ -437,113 +386,113 @@ public class MapReduceTool
 		return stats;
 	}
 	
-	public static void writeMetaDataFile ( String mtdfile, ValueType v, MatrixCharacteristics mc, OutputInfo outinfo) throws IOException {
-		writeMetaDataFile(mtdfile, v, mc, outinfo, null);
+	public static void writeMetaDataFile(String mtdfile, ValueType vt, MatrixCharacteristics mc, OutputInfo outinfo) 
+		throws IOException {
+		writeMetaDataFile(mtdfile, vt, null, DataType.MATRIX, mc, outinfo);
+	}
+	
+	public static void writeMetaDataFile(String mtdfile, ValueType vt, ValueType[] schema, DataType dt, MatrixCharacteristics mc, OutputInfo outinfo) 
+		throws IOException {
+		writeMetaDataFile(mtdfile, vt, schema, dt, mc, outinfo, null);
 	}
 
-	public static void writeMetaDataFile(String mtdfile, ValueType v, MatrixCharacteristics mc, OutputInfo outinfo,
-	                                     FileFormatProperties formatProperties) throws IOException {
+	public static void writeMetaDataFile(String mtdfile, ValueType vt, MatrixCharacteristics mc,  OutputInfo outinfo, FileFormatProperties formatProperties) 
+		throws IOException {
+		writeMetaDataFile(mtdfile, vt, null, DataType.MATRIX, mc, outinfo, formatProperties);
+	}
+	
+	public static void writeMetaDataFile(String mtdfile, ValueType vt, ValueType[] schema, DataType dt, MatrixCharacteristics mc, 
+			OutputInfo outinfo, FileFormatProperties formatProperties) 
+		throws IOException 
+	{
 		Path pt = new Path(mtdfile);
 		FileSystem fs = FileSystem.get(_rJob);
-		BufferedWriter br = new BufferedWriter(new OutputStreamWriter(fs.create(pt,true)));
-		formatProperties = (formatProperties==null && outinfo==OutputInfo.CSVOutputInfo) ?
-				new CSVFileFormatProperties() : formatProperties;
-		OrderedJSONObject mtd = new OrderedJSONObject(); // maintain order in output file
-
-		try {
-			// build JSON metadata object
-			mtd.put(DataExpression.DATATYPEPARAM, "matrix");
-			switch (v) {
-				case DOUBLE:
-					mtd.put(DataExpression.VALUETYPEPARAM, "double");
-					break;
-				case INT:
-					mtd.put(DataExpression.VALUETYPEPARAM, "int");
-					break;
-				case BOOLEAN:
-					mtd.put(DataExpression.VALUETYPEPARAM, "boolean");
-					break;
-				case STRING:
-					mtd.put(DataExpression.VALUETYPEPARAM, "string");
-					break;
-				case UNKNOWN:
-					mtd.put(DataExpression.VALUETYPEPARAM, "unknown");
-					break;
-				case OBJECT:
-					mtd.put(DataExpression.VALUETYPEPARAM, "object");
-					break;
-			}
-			mtd.put(DataExpression.READROWPARAM, mc.getRows());
-			mtd.put(DataExpression.READCOLPARAM, mc.getCols());
-			// only output rows_in_block and cols_in_block for binary format
-			if (outinfo == OutputInfo.BinaryBlockOutputInfo) {
-				mtd.put(DataExpression.ROWBLOCKCOUNTPARAM, mc.getRowsPerBlock());
-				mtd.put(DataExpression.COLUMNBLOCKCOUNTPARAM, mc.getColsPerBlock());
-			}
-			mtd.put(DataExpression.READNUMNONZEROPARAM, mc.getNonZeros());
-			if (outinfo == OutputInfo.TextCellOutputInfo) {
-				mtd.put(DataExpression.FORMAT_TYPE, "text");
-			} else if (outinfo == OutputInfo.BinaryBlockOutputInfo || outinfo == OutputInfo.BinaryCellOutputInfo ) {
-				mtd.put(DataExpression.FORMAT_TYPE, "binary");
-			} else if (outinfo == OutputInfo.CSVOutputInfo) {
-				mtd.put(DataExpression.FORMAT_TYPE, "csv");
-			} else {
-				mtd.put(DataExpression.FORMAT_TYPE, "specialized");
-			}
-			if (outinfo == OutputInfo.CSVOutputInfo) {
-				CSVFileFormatProperties csvProperties = (CSVFileFormatProperties) formatProperties;
-				mtd.put(DataExpression.DELIM_HAS_HEADER_ROW, csvProperties.hasHeader());
-				mtd.put(DataExpression.DELIM_DELIMITER, csvProperties.getDelim());
-			}
-			mtd.put(DataExpression.DESCRIPTIONPARAM,
-					new OrderedJSONObject().put(DataExpression.AUTHORPARAM, "SystemML"));
-
-			// write metadata JSON object to file
-			mtd.write(br, 4); // indent with 4 spaces
-			br.close();
+		try( BufferedWriter br = new BufferedWriter(new OutputStreamWriter(fs.create(pt,true))) ) {
+			String mtd = metaDataToString(vt, schema, dt, mc, outinfo, formatProperties);
+			br.write(mtd);
 		} catch (Exception e) {
 			throw new IOException("Error creating and writing metadata JSON file", e);
 		}
 	}
 
-	public static void writeScalarMetaDataFile(String mtdfile, ValueType v) throws IOException {
-		Path pt=new Path(mtdfile);
+	public static void writeScalarMetaDataFile(String mtdfile, ValueType vt) 
+		throws IOException 
+	{
+		Path pt = new Path(mtdfile);
 		FileSystem fs = FileSystem.get(_rJob);
-		BufferedWriter br=new BufferedWriter(new OutputStreamWriter(fs.create(pt,true)));
-		OrderedJSONObject mtd = new OrderedJSONObject(); // maintain order in output file
-
-		try {
-			// build JSON metadata object
-			mtd.put(DataExpression.DATATYPEPARAM, "scalar");
-			switch (v) {
-				case DOUBLE:
-					mtd.put(DataExpression.VALUETYPEPARAM, "double");
-					break;
-				case INT:
-					mtd.put(DataExpression.VALUETYPEPARAM, "int");
-					break;
-				case BOOLEAN:
-					mtd.put(DataExpression.VALUETYPEPARAM, "boolean");
-					break;
-				case STRING:
-					mtd.put(DataExpression.VALUETYPEPARAM, "string");
-					break;
-				case UNKNOWN:
-					mtd.put(DataExpression.VALUETYPEPARAM, "unknown");
-					break;
-				case OBJECT:
-					throw new IOException("Write of generic object types not supported.");
-			}
-			mtd.put(DataExpression.FORMAT_TYPE, "text");
-			mtd.put(DataExpression.DESCRIPTIONPARAM,
-					new OrderedJSONObject().put(DataExpression.AUTHORPARAM, "SystemML"));
-
-			// write metadata JSON object to file
-			mtd.write(br, 4); // indent with 4 spaces
-			br.close();
-		} catch (Exception e) {
+		try( BufferedWriter br = new BufferedWriter(new OutputStreamWriter(fs.create(pt,true))) ) {
+			String mtd = metaDataToString(vt, null, DataType.SCALAR, null, OutputInfo.TextCellOutputInfo, null);
+			br.write(mtd);
+		} 
+		catch (Exception e) {
 			throw new IOException("Error creating and writing metadata JSON file", e);
 		}
+	}
+
+	public static String metaDataToString(ValueType vt, ValueType[] schema, DataType dt, MatrixCharacteristics mc,
+			OutputInfo outinfo, FileFormatProperties formatProperties) throws JSONException, DMLRuntimeException
+	{
+		OrderedJSONObject mtd = new OrderedJSONObject(); // maintain order in output file
+
+		//handle data type and value types (incl schema for frames)
+		mtd.put(DataExpression.DATATYPEPARAM, dt.toString().toLowerCase());
+		if (schema == null) {
+			mtd.put(DataExpression.VALUETYPEPARAM, vt.toString().toLowerCase());
+		}	
+		else {
+			StringBuffer schemaSB = new StringBuffer();
+			for(int i=0; i < schema.length; i++) {
+				if( schema[i] == ValueType.UNKNOWN )
+					schemaSB.append("*");
+				else
+					schemaSB.append(schema[i].toString());
+				schemaSB.append(DataExpression.DEFAULT_DELIM_DELIMITER);
+			}
+			mtd.put(DataExpression.SCHEMAPARAM, schemaSB.toString());
+		}
+		
+		//handle output dimensions
+		if( !dt.isScalar() ) {
+			mtd.put(DataExpression.READROWPARAM, mc.getRows());
+			mtd.put(DataExpression.READCOLPARAM, mc.getCols());
+			// handle output nnz and binary block configuration
+			if( dt.isMatrix() ) {
+				if (outinfo == OutputInfo.BinaryBlockOutputInfo ) {
+					mtd.put(DataExpression.ROWBLOCKCOUNTPARAM, mc.getRowsPerBlock());
+					mtd.put(DataExpression.COLUMNBLOCKCOUNTPARAM, mc.getColsPerBlock());
+				}
+				mtd.put(DataExpression.READNUMNONZEROPARAM, mc.getNonZeros());
+			}
+		}
+			
+		//handle format type and additional arguments	
+		mtd.put(DataExpression.FORMAT_TYPE, OutputInfo.outputInfoToStringExternal(outinfo));
+		if (outinfo == OutputInfo.CSVOutputInfo) {
+			CSVFileFormatProperties csvProperties = (formatProperties==null) ?
+				new CSVFileFormatProperties() : (CSVFileFormatProperties)formatProperties;
+			mtd.put(DataExpression.DELIM_HAS_HEADER_ROW, csvProperties.hasHeader());
+			mtd.put(DataExpression.DELIM_DELIMITER, csvProperties.getDelim());
+		}
+
+		if (formatProperties != null) {
+			String description = formatProperties.getDescription();
+			if (StringUtils.isNotEmpty(description)) {
+				String jsonDescription = StringEscapeUtils.escapeJson(description);
+				mtd.put(DataExpression.DESCRIPTIONPARAM, jsonDescription);
+			}
+		}
+
+		String userName = System.getProperty("user.name");
+		if (StringUtils.isNotEmpty(userName)) {
+			mtd.put(DataExpression.AUTHORPARAM, userName);
+		} else {
+			mtd.put(DataExpression.AUTHORPARAM, "SystemML");
+		}
+
+		SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z");
+		mtd.put(DataExpression.CREATEDPARAM, sdf.format(new Date()));
+
+		return mtd.toString(4); // indent with 4 spaces	
 	}
 	
 	public static double[][] readMatrixFromHDFS(String dir, InputInfo inputinfo, long rlen, long clen, int brlen, int bclen) 
@@ -621,57 +570,45 @@ public class MapReduceTool
 			throw new RuntimeException("cannot read partition "+currentPart);
 		
 		int buffsz = 64 * 1024;
-		FSDataInputStream currentStream=fs.open(fileToRead, buffsz);
-	    DoubleWritable readKey=new DoubleWritable();
+		DoubleWritable readKey=new DoubleWritable();
 	    IntWritable readValue=new IntWritable();
-	    
-		boolean contain0s=false;
-		long numZeros=0;
-		if(currentPart==metadata.getPartitionOfZero())
-		{
-			contain0s=true;
-			numZeros=metadata.getNumberOfZero();
-		}
-	    ReadWithZeros reader=new ReadWithZeros(currentStream, contain0s, numZeros);
-
-	    int numRead=0;
-	    while(numRead<=offset)
-		{
-	    	reader.readNextKeyValuePairs(readKey, readValue);
-			numRead+=readValue.get();
-			cum_weight += readValue.get();
-		}
-	    
-	    double ret = readKey.get();
-	    if(average) {
-	    	if(numRead<=offset+1) {
-	    		reader.readNextKeyValuePairs(readKey, readValue);
+	    FSDataInputStream currentStream = null;
+		double ret = -1;
+	    try {
+			currentStream = fs.open(fileToRead, buffsz);
+		    
+			boolean contain0s=false;
+			long numZeros=0;
+			if(currentPart==metadata.getPartitionOfZero())
+			{
+				contain0s=true;
+				numZeros=metadata.getNumberOfZero();
+			}
+		    ReadWithZeros reader=new ReadWithZeros(currentStream, contain0s, numZeros);
+	
+		    int numRead=0;
+		    while(numRead<=offset)
+			{
+		    	reader.readNextKeyValuePairs(readKey, readValue);
+				numRead+=readValue.get();
 				cum_weight += readValue.get();
-				ret = (ret+readKey.get())/2;
-	    	}
-	    }
-	    currentStream.close();
-		return new double[] {ret, (average ? -1 : readValue.get()), (average ? -1 : cum_weight)};
+			}
+		    
+		    ret = readKey.get();
+		    if(average) {
+		    	if(numRead<=offset+1) {
+		    		reader.readNextKeyValuePairs(readKey, readValue);
+					cum_weight += readValue.get();
+					ret = (ret+readKey.get())/2;
+		    	}
+		    }
+		}
+		finally {
+			IOUtilFunctions.closeSilently(currentStream);
+		}
+	    return new double[] {ret, (average ? -1 : readValue.get()), (average ? -1 : cum_weight)};
 	}
-	
-	/**
-	 * 
-	 * @param name
-	 * @return
-	 */
-	public static int extractNumberFromOutputFile(String name)
-	{
-		int i=name.indexOf("part-");
-		assert(i>=0);
-		return Integer.parseInt(name.substring(i+5));
-	}
-	
-	/**
-	 * 
-	 * @param dir
-	 * @param permissions
-	 * @throws IOException
-	 */
+
 	public static void createDirIfNotExistOnHDFS(String dir, String permissions) 
 		throws IOException
 	{
@@ -696,15 +633,7 @@ public class MapReduceTool
 		//NOTE: we depend on the configured umask, setting umask in job or fspermission has no effect
 		//similarly setting MRConfigurationNames.DFS_DATANODE_DATA_DIR_PERM as no effect either.
 	}
-	
-	
-	/**
-	 * 
-	 * @param filename
-	 * @param overwrite
-	 * @return
-	 * @throws IOException
-	 */
+
 	public static FSDataOutputStream getHDFSDataOutputStream(String filename, boolean overwrite) 
 		throws IOException
 	{

@@ -26,11 +26,23 @@ import org.junit.runners.Suite;
  *  won't run two of them at once. */
 @RunWith(Suite.class)
 @Suite.SuiteClasses({
+	FrameAppendDistTest.class,
 	FrameAppendTest.class,
 	FrameCastingTest.class,
+	FrameConverterTest.class,
 	FrameCopyTest.class,
+	FrameEvictionTest.class,
+	FrameFunctionTest.class,
 	FrameGetSetTest.class,
+	FrameIndexingDistTest.class,
 	FrameIndexingTest.class,
+	FrameMatrixCastingTest.class,
+	FrameMatrixReblockTest.class,
+	FrameMatrixWriteTest.class,
+	FrameMetaReadWriteTest.class,
+	FrameReadWriteTest.class,
+	FrameScalarCastingTest.class,
+	FrameSchemaReadTest.class,
 	FrameSerializationTest.class,
 })
 

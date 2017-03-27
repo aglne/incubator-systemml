@@ -24,7 +24,6 @@ import org.apache.hadoop.mapred.JobConf;
 
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.ParForProgramBlock.PDataPartitionFormat;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
@@ -38,10 +37,6 @@ import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.OutputInfo;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 
-/**
- * 
- * 
- */
 public class DataPartitionCPInstruction extends UnaryCPInstruction
 {	
 	
@@ -53,13 +48,7 @@ public class DataPartitionCPInstruction extends UnaryCPInstruction
 		_cptype = CPINSTRUCTION_TYPE.MMTSJ;
 		_pformat = pformat;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static DataPartitionCPInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -79,10 +68,10 @@ public class DataPartitionCPInstruction extends UnaryCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		//get input
-		MatrixObject moIn = (MatrixObject) ec.getVariable(input1.getName());
+		MatrixObject moIn = ec.getMatrixObject(input1.getName());
 		MatrixBlock mb = moIn.acquireRead();
 		
 		//execute operations 

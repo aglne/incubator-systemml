@@ -20,6 +20,7 @@
 package org.apache.sysml.runtime.controlprogram.caching;
 
 import org.apache.hadoop.io.Writable;
+import org.apache.sysml.runtime.DMLRuntimeException;
 
 
 /**
@@ -29,18 +30,62 @@ import org.apache.hadoop.io.Writable;
  */
 public interface CacheBlock extends Writable 
 {
+
+	public int getNumRows();
+
+	public int getNumColumns();
+	
+	/**
+	 * Get the in-memory size in bytes of the cache block.
+	 * 
+	 * @return in-memory size in bytes of cache block
+	 */
+	public long getInMemorySize();
+	
 	/**
 	 * Get the exact serialized size in bytes of the cache block.
-	 * @return
+	 * 
+	 * @return exact serialized size in bytes of cache block
 	 */
 	public long getExactSerializedSize();
-	
+
 	/**
 	 * Indicates if the cache block is subject to shallow serialized,
 	 * which is generally true if in-memory size and serialized size
 	 * are almost identical allowing to avoid unnecessary deep serialize. 
 	 * 
-	 * @return
+	 * @return true if shallow serialized
 	 */
 	public boolean isShallowSerialize();
+	
+	/**
+	 * Free unnecessarily allocated empty block.
+	 */
+	public void compactEmptyBlock();
+	
+	/**
+	 * Slice a sub block out of the current block and write into the given output block.
+	 * This method returns the passed instance if not null.
+	 * 
+	 * @param rl row lower
+	 * @param ru row upper
+	 * @param cl column lower
+	 * @param cu column upper
+	 * @param block cache block
+	 * @return sub-block of cache block
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 */
+	public CacheBlock sliceOperations(int rl, int ru, int cl, int cu, CacheBlock block) 
+		throws DMLRuntimeException;
+	
+	/**
+	 * Merge the given block into the current block. Both blocks needs to be of equal 
+	 * dimensions and contain disjoint non-zero cells.
+	 * 
+	 * @param that cache block
+	 * @param appendOnly ?
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 */
+	public void merge(CacheBlock that, boolean appendOnly) 
+		throws DMLRuntimeException;
 }

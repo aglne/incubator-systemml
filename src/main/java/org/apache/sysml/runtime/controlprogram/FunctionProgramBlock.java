@@ -27,7 +27,6 @@ import org.apache.sysml.hops.recompile.Recompiler;
 import org.apache.sysml.parser.DataIdentifier;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.DMLScriptException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.cp.Data;
 import org.apache.sysml.utils.Statistics;
@@ -35,14 +34,15 @@ import org.apache.sysml.utils.Statistics;
 
 public class FunctionProgramBlock extends ProgramBlock 
 {
-	
+	public String _functionName;
+	public String _namespace;
 	protected ArrayList<ProgramBlock> _childBlocks;
 	protected ArrayList<DataIdentifier> _inputParams;
 	protected ArrayList<DataIdentifier> _outputParams;
 	
 	private boolean _recompileOnce = false;
 	
-	public FunctionProgramBlock( Program prog, ArrayList<DataIdentifier> inputParams, ArrayList<DataIdentifier> outputParams) throws DMLRuntimeException
+	public FunctionProgramBlock( Program prog, ArrayList<DataIdentifier> inputParams, ArrayList<DataIdentifier> outputParams) 
 	{
 		super(prog);
 		_childBlocks = new ArrayList<ProgramBlock>();
@@ -80,7 +80,7 @@ public class FunctionProgramBlock extends ProgramBlock
 	
 	@Override
 	public void execute(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{	
 		//dynamically recompile entire function body (according to function inputs)
 		try {
@@ -125,11 +125,7 @@ public class FunctionProgramBlock extends ProgramBlock
 		// check return values
 		checkOutputParameters(ec.getVariables());
 	}
-	
-	/**
-	 * 
-	 * @param vars
-	 */
+
 	protected void checkOutputParameters( LocalVariableMap vars )
 	{
 		for( DataIdentifier diOut : _outputParams )
@@ -152,13 +148,6 @@ public class FunctionProgramBlock extends ProgramBlock
 	
 	public boolean isRecompileOnce() {
 		return _recompileOnce;
-	}
-	
-	public void printMe() {
-		
-		for (ProgramBlock pb : this._childBlocks){
-			pb.printMe();
-		}
 	}
 	
 	public String printBlockErrorLocation(){

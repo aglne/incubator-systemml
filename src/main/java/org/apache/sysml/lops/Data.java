@@ -52,10 +52,10 @@ public class Data extends Lop
 	/**
 	 * Method to create literal LOPs.
 	 * 
-	 * @param vt
-	 * @param literalValue
-	 * @return
-	 * @throws LopsException
+	 * @param vt value type
+	 * @param literalValue literal value
+	 * @return literal low-level operator
+	 * @throws LopsException if LopsException occurs
 	 */
 	public static Data createLiteralLop(ValueType vt, String literalValue) throws LopsException {
 		// All literals have default format type of TEXT
@@ -67,15 +67,16 @@ public class Data extends Lop
 	 * In case of write: <code>input</code> must be provided. This will always be added as the first element in <code>input</code> array.
 	 * For literals: this function is invoked through the static method <code>createLiteralLop</code>.
 	 * 
-	 * @param op
-	 * @param input
-	 * @param inputParametersLops
-	 * @param name
-	 * @param literal
-	 * @param dt
-	 * @param vt
-	 * @param isTransient
-	 * @throws LopsException
+	 * @param op operation type
+	 * @param input low-level operator
+	 * @param inputParametersLops input lops
+	 * @param name string name
+	 * @param literal string literal
+	 * @param dt data type
+	 * @param vt value type
+	 * @param isTransient true if transient
+	 * @param fmt file format
+	 * @throws LopsException if LopsException occurs
 	 */
 	public Data(Data.OperationTypes op, Lop input, HashMap<String, Lop> 
 	inputParametersLops, String name, String literal, DataType dt, ValueType vt, boolean isTransient, FileFormatTypes fmt) throws LopsException 
@@ -178,7 +179,7 @@ public class Data extends Lop
 	 * Data-Lop-specific method to set the execution type for persistent write.
 	 * TODO: split lops into MR/CP lop. 
 	 * 
-	 * @param et
+	 * @param et execution type
 	 */
 	public void setExecType( ExecType et )
 	{
@@ -187,8 +188,8 @@ public class Data extends Lop
 	
 	/**
 	 * Method to set format types for input, output files. 
-	 * @param type
-	 * @throws LopsException 
+	 * @param type file format
+	 * @throws LopsException if LopsException occurs
 	 */
 	public void setFileFormatAndProperties(FileFormatTypes type) throws LopsException 
 	{
@@ -208,7 +209,7 @@ public class Data extends Lop
 
 	/**
 	 * method to get format type for input, output files. 
-	 * @return
+	 * @return file format
 	 */
 	public FileFormatTypes getFileFormatType() 
 	{
@@ -221,12 +222,12 @@ public class Data extends Lop
 		return getID() + ":" + "File_Name: " + this.getOutputParameters().getFile_name() + " " + 
 		"Label: " + this.getOutputParameters().getLabel() + " " + "Operation: = " + operation + " " + 
 		"Format: " + this.outParams.getFormat() +  " Datatype: " + getDataType() + " Valuetype: " + getValueType() + " num_rows = " + this.getOutputParameters().getNumRows() + " num_cols = " + 
-		this.getOutputParameters().getNumCols() + " UpdateInPlace: " + this.getOutputParameters().getUpdateInPlace();
+		this.getOutputParameters().getNumCols() + " UpdateInPlace: " + this.getOutputParameters().getUpdateType();
 	}
 
 	/**
 	 * method to get operation type, i.e. read/write.
-	 * @return
+	 * @return operation type
 	 */
 	 
 	public OperationTypes getOperationType()
@@ -236,7 +237,7 @@ public class Data extends Lop
 	
 	/**
 	 * method to get inputParams 
-	 * @return
+	 * @return input parameters
 	 */
 	public HashMap<String, Lop> getInputParams(){
 		return _inputParams;
@@ -256,13 +257,10 @@ public class Data extends Lop
 	
 	/**
 	 * method to check if this data lop represents a literal.
-	 * @return
+	 * @return true if data lop is a literal
 	 */
-	
-	public boolean isLiteral()
-	{
+	public boolean isLiteral() {
 		return literal_var;
-
 	}
 	
 	public boolean getBooleanValue() throws LopsException {
@@ -308,17 +306,13 @@ public class Data extends Lop
 	
 	/**
 	 * Method to check if this represents a transient variable.
-	 * @return
+	 * @return true if this data lop is a transient variable
 	 */
 	public boolean isTransient()
 	{
 		return transient_var;
 	}
 	
-	/**
-	 * 
-	 * @return
-	 */
 	public boolean isPersistentWrite()
 	{
 		return operation == OperationTypes.WRITE && !transient_var;
@@ -432,7 +426,7 @@ public class Data extends Lop
 		if ( operation == OperationTypes.WRITE ) {
 			sb.append( OPERAND_DELIMITOR );
 			String fmt = "";
-			if ( getDataType() == DataType.MATRIX ) {
+			if ( getDataType() == DataType.MATRIX || getDataType() == DataType.FRAME ) {
 				if ( oparams.getFormat() == Format.MM )
 					fmt = "matrixmarket";
 				else if (oparams.getFormat() == Format.TEXT)
@@ -497,14 +491,26 @@ public class Data extends Lop
 			}
 			
 		}
-		
+
+		if (operation == OperationTypes.WRITE) {
+			sb.append(OPERAND_DELIMITOR);
+			Lop descriptionLop = getInputParams().get(DataExpression.DESCRIPTIONPARAM);
+			if (descriptionLop != null) {
+				boolean descLiteral = (descriptionLop instanceof Data && ((Data) descriptionLop).isLiteral());
+				sb.append(prepOperand(descriptionLop.getOutputParameters().getLabel(), DataType.SCALAR,
+						ValueType.STRING, descLiteral));
+			} else {
+				sb.append(prepOperand("", DataType.SCALAR, ValueType.STRING, true));
+			}
+		}
+
 		return sb.toString();
 	}
 	
 	/**
 	 * Method to generate createvar instruction that updates symbol table with metadata, hdfsfile name, etc.
 	 * 
-	 * @throws LopsException 
+	 * @throws LopsException if LopsException occurs
 	 */
 	public String getInstructions() throws LopsException {
 		return getCreateVarInstructions(getOutputParameters().getFile_name(), getOutputParameters().getLabel());
@@ -522,18 +528,15 @@ public class Data extends Lop
 			
 			OutputParameters oparams = getOutputParameters();
 			String fmt = "";
-			// TODO: following logic should change once we LOPs encode key-value-class information.
 			if ( oparams.getFormat() == Format.TEXT )
 				fmt = "textcell";
 			else if ( oparams.getFormat() == Format.MM )
 				fmt = "matrixmarket";
 			else if ( oparams.getFormat() == Format.CSV )
 				fmt = "csv";
-			else {
-				if ( oparams.getRowsInBlock() > 0 || oparams.getColsInBlock() > 0 )
-					fmt = "binaryblock";
-				else 
-					fmt = "binarycell";
+			else { //binary
+				fmt = ( getDataType() == DataType.FRAME || oparams.getRowsInBlock() > 0 
+					|| oparams.getColsInBlock() > 0 ) ? "binaryblock" : "binarycell";
 			}
 			
 			StringBuilder sb = new StringBuilder();
@@ -546,6 +549,8 @@ public class Data extends Lop
 			sb.append( outputFileName );
 			sb.append( OPERAND_DELIMITOR );
 			sb.append( false );
+			sb.append( OPERAND_DELIMITOR );
+			sb.append( getDataType() );
 			sb.append( OPERAND_DELIMITOR ); // only persistent reads come here!
 			sb.append( fmt );
 			sb.append( OPERAND_DELIMITOR );
@@ -559,12 +564,19 @@ public class Data extends Lop
 			sb.append( OPERAND_DELIMITOR );
 			sb.append( oparams.getNnz() );
 			sb.append( OPERAND_DELIMITOR );
-			sb.append( oparams.getUpdateInPlace() );
+			sb.append( oparams.getUpdateType().toString().toLowerCase() );
 			
-			/* Format-specific properties */
+			// Format-specific properties
 			if ( oparams.getFormat() == Format.CSV ) {
 				sb.append( OPERAND_DELIMITOR );
 				sb.append( createVarCSVHelper() );
+			}
+			
+			// Frame-specific properties
+			if( getDataType()==DataType.FRAME ) {
+				Data schema = (Data) getNamedInputLop(DataExpression.SCHEMAPARAM);
+				sb.append( OPERAND_DELIMITOR );
+				sb.append( (schema!=null) ? schema.prepScalarLabel() : "*" );
 			}
 			
 			return sb.toString();
@@ -578,8 +590,8 @@ public class Data extends Lop
 	 * Helper function that attaches CSV format-specific properties to createvar instruction.
 	 * The set of properties that are attached for a READ operation is different from that for a WRITE operation.
 	 * 
-	 * @return
-	 * @throws LopsException
+	 * @return instruction with csv format properties appended
+	 * @throws LopsException if LopsException occurs
 	 */
 	private String createVarCSVHelper() throws LopsException {
 		StringBuilder sb = new StringBuilder();

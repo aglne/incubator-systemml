@@ -26,7 +26,6 @@ import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysml.runtime.controlprogram.ProgramBlock;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
@@ -80,11 +79,7 @@ public abstract class ParWorker
 		_numTasks    = 0;
 		_numIters    = 0;
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	public LocalVariableMap getVariables()
 	{
 		return _ec.getVariables();
@@ -94,7 +89,7 @@ public abstract class ParWorker
 	 * Returns a summary statistic of executed tasks and hence should only be called 
 	 * after execution.
 	 * 
-	 * @return
+	 * @return number of executed tasks
 	 */
 	public long getExecutedTasks()
 	{
@@ -105,25 +100,13 @@ public abstract class ParWorker
 	 * Returns a summary statistic of executed iterations and hence should only be called 
 	 * after execution.
 	 * 
-	 * @return
+	 * @return number of executed iterations
 	 */
 	public long getExecutedIterations()
 	{
 		return _numIters;
 	}
-	
-	/**
-	 * 
-	 */
-	public void resetExecutedTasks()
-	{
-		_numTasks = 0;
-		_numIters = 0;
-	}
-	
-	/**
-	 * 
-	 */
+
 	protected void pinResultVariables()
 	{
 		for( String var : _resultVars )
@@ -137,14 +120,8 @@ public abstract class ParWorker
 		}
 	}
 
-	/**
-	 * 
-	 * @param task
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
 	protected void executeTask( Task task ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		LOG.trace("EXECUTE PARFOR_WORKER ID="+_workerID+" for task "+task.toCompactString());
 		
@@ -158,15 +135,9 @@ public abstract class ParWorker
 				break;		
 		}
 	}	
-		
-	/**
-	 * 
-	 * @param task
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
+
 	private void executeSetTask( Task task ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		//monitoring start
 		Timing time1 = null, time2 = null;		
@@ -205,15 +176,9 @@ public abstract class ParWorker
 			StatisticMonitor.putPWStat(_workerID, Stat.PARWRK_TASK_T, time2.stop());
 		}
 	}
-	
-	/**
-	 * 
-	 * @param task
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
+
 	private void executeRangeTask( Task task ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		//monitoring start
 		Timing time1 = null, time2 = null;		

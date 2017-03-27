@@ -43,16 +43,13 @@ public class KahanPlusSq extends KahanFunction implements Serializable {
 
     /**
      * Get the KahanPlusSq singleton object.
+     * 
+     * @return KahanPlusSq singleton object
      */
     public static KahanPlusSq getKahanPlusSqFnObject() {
         if (singleObj == null)
             singleObj = new KahanPlusSq();
         return singleObj;
-    }
-
-    public Object clone() throws CloneNotSupportedException {
-        // cloning is not supported for singleton classes
-        throw new CloneNotSupportedException();
     }
 
     /**
@@ -88,16 +85,13 @@ public class KahanPlusSq extends KahanFunction implements Serializable {
         return kObj;
     }
 
-    /**
-     * Square the given term, then add to the existing sum using
-     * the Kahan summation algorithm.
-     *
-     * @param kObj A KahanObject containing the current sum and
-     *             correction factor for the Kahan summation
-     *             algorithm.
-     * @param in The current term to be squared and added.
-     */
+    @Override
     public void execute2(KahanObject kObj, double in) {
         kplus.execute2(kObj, in * in);
+    }
+    
+    @Override
+    public void execute3(KahanObject kObj, double in, int count) {
+        kplus.execute3(kObj, in * in, count);
     }
 }

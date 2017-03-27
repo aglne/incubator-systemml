@@ -19,74 +19,137 @@
 
 package org.apache.sysml.parser;
 
+import java.util.List;
+
+import org.apache.sysml.api.DMLException;
+import org.apache.sysml.parser.common.CustomErrorListener;
+import org.apache.sysml.parser.common.CustomErrorListener.ParseIssue;
+
 /**
- * This exception is thrown when parse errors are encountered.
- * You can explicitly create objects of this exception type by
- * calling the method generateParseException in the generated
- * parser.
- *
- * You can modify this class to customize your error reporting
- * mechanisms so long as you retain the public fields.
+ * This exception is thrown when parse issues are encountered.
  * 
- * 
- * NOTE: MB: Originally, this exception was generated with javacc.
- * Unfortunately, many classes directly use this exception. Hence,
- * on removing javacc we kept a condensed version of it.
- * TODO: eventually we should remove the token class and create our
- * own exception or just use LanguageException.
  */
-public class ParseException extends Exception 
+public class ParseException extends DMLException 
 {
+	private static final long serialVersionUID = 9199966053655385928L;
+
+	/**
+	 * List of issues that happened during parsing. Typically set by the error
+	 * listener.
+	 */
+	private List<ParseIssue> _parseIssues;
+
+	/**
+	 * The DML/PyDML script string. Used to display the original lines where the
+	 * parse issues occurred.
+	 */
+	private String _scriptString;
+
+	/**
+	 * Standard exception message. If no list of parse issues exists, this
+	 * message can be used to display a parse exception message that doesn't
+	 * relate to the list of parse issues.
+	 */
+	private String _message;
+
 	
-  /**
-   * The version identifier for this Serializable class.
-   * Increment only if the <i>serialized</i> form of the
-   * class changes.
-   */
-  private static final long serialVersionUID = 1L;
+	public ParseException() {
+		super();
+	}
 
-  /**
-   * The following constructors are for use by you for whatever
-   * purpose you can think of.  Constructing the exception in this
-   * manner makes the exception behave in the normal way - i.e., as
-   * documented in the class "Throwable".  The fields "errorToken",
-   * "expectedTokenSequences", and "tokenImage" do not contain
-   * relevant information.  The JavaCC generated code does not use
-   * these constructors.
-   */
+	public ParseException(String message) {
+		super(message);
+		_message = message;
+	}
 
-  public ParseException() {
-    super();
-  }
+	public ParseException(String message, Exception e) {
+		super(message, e);
+		_message = message;
+	}
 
-  /** Constructor with message. */
-  public ParseException(String message) {
-    super(message);
-  }
-  
-  public ParseException(String message, Exception e) {
-	  super(message, e);
-  }
-  /**
-   * This is the last token that has been consumed successfully.  If
-   * this object has been created due to a parse error, the token
-   * following this token will (therefore) be the first error token.
-   */
-  public Token currentToken;
+	/**
+	 * This constructor takes a list of parse issues that were generated during
+	 * script parsing and the original DML/PyDML script String.
+	 * 
+	 * @param parseIssues
+	 *            List of parse issues (syntax errors, validation errors, and
+	 *            validation warnings) generated during parsing.
+	 * @param scriptString
+	 *            The DML/PyDML script String.
+	 */
+	public ParseException(List<ParseIssue> parseIssues, String scriptString) {
+		super();
+		_parseIssues = parseIssues;
+		_scriptString = scriptString;
+	}
 
-  /**
-   * Each entry in this array is an array of integers.  Each array
-   * of integers represents a sequence of tokens (by their ordinal
-   * values) that is expected at this point of the parse.
-   */
-  public int[][] expectedTokenSequences;
+	/**
+	 * Obtain the list of parse issues that occurred.
+	 * 
+	 * @return the list of parse issues
+	 */
+	public List<ParseIssue> getParseIssues() {
+		return _parseIssues;
+	}
 
-  /**
-   * This is a reference to the "tokenImage" array of the generated
-   * parser within which the parse error occurred.  This array is
-   * defined in the generated ...Constants interface.
-   */
-  public String[] tokenImage;
+	/**
+	 * Set the list of parse issues.
+	 * 
+	 * @param parseIssues
+	 *            the list of parse issues
+	 */
+	public void setParseIssues(List<ParseIssue> parseIssues) {
+		_parseIssues = parseIssues;
+	}
 
+	/**
+	 * Obtain the original DML/PyDML script string.
+	 * 
+	 * @return the original DML/PyDML script string
+	 */
+	public String getScriptString() {
+		return _scriptString;
+	}
+
+	/**
+	 * Set the original DML/PyDML script string.
+	 * 
+	 * @param scriptString
+	 *            the original DML/PyDML script string
+	 */
+	public void setScriptString(String scriptString) {
+		_scriptString = scriptString;
+	}
+
+	/**
+	 * Does this ParseException contain a list of parse issues?
+	 * 
+	 * @return <code>true</code> if the list of parse issues exists and is
+	 *         greater than 0, <code>false</code> otherwise
+	 */
+	public boolean hasParseIssues() {
+		return (_parseIssues != null && _parseIssues.size() > 0);
+	}
+
+	/**
+	 * Obtain the exception message. If there is a list of parse issues, these
+	 * are used to generate the exception message.
+	 * 
+	 */
+	@Override
+	public String getMessage() {
+		return hasParseIssues() ? generateParseIssuesMessage() :
+			(_message != null) ? _message : "No parse issue message.";
+	}
+
+	/**
+	 * Generate a message displaying information about the parse issues that
+	 * occurred.
+	 * 
+	 * @return String representing the list of parse issues.
+	 */
+	private String generateParseIssuesMessage() {
+		return CustomErrorListener.generateParseIssuesMessage(_scriptString, _parseIssues);
+	}
+	
 }
-/* JavaCC - OriginalChecksum=f4855557e750c030aaf6a53d0d8438bb (do not edit this line) */

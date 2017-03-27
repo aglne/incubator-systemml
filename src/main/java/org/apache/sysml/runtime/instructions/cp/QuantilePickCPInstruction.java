@@ -24,7 +24,6 @@ import java.io.IOException;
 import org.apache.sysml.lops.PickByCount.OperationTypes;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
@@ -52,13 +51,7 @@ public class QuantilePickCPInstruction extends BinaryCPInstruction
 		_type = type;
 		_inmem = inmem;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static QuantilePickCPInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -105,7 +98,7 @@ public class QuantilePickCPInstruction extends BinaryCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec)
-			throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		switch( _type ) 
 		{
@@ -130,7 +123,7 @@ public class QuantilePickCPInstruction extends BinaryCPInstruction
 				}
 				else //MR VALUEPICK
 				{
-					MatrixObject mat = (MatrixObject)ec.getVariable(input1.getName());
+					MatrixObject mat = ec.getMatrixObject(input1.getName());
 					String fname = mat.getFileName();
 					MetaData mdata = mat.getMetaData();
 					ScalarObject pickindex = ec.getScalarInput(input2.getName(), input2.getValueType(), input2.isLiteral());

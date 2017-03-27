@@ -136,7 +136,6 @@ public class FunctionOp extends Hop
 				_processingMemEstimate = computeIntermediateMemEstimate(_dim1, _dim2, lnnz);
 			}
 			_memEstimate = getInputOutputSize();
-			//System.out.println("QREst " + (_memEstimate/1024/1024));
 		}
 	}
 	
@@ -150,25 +149,19 @@ public class FunctionOp extends Hop
 				// upper-triangular and lower-triangular matrices
 				long outputH = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(0).getDim1(), getOutputs().get(0).getDim2(), 0.5);
 				long outputR = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(1).getDim1(), getOutputs().get(1).getDim2(), 0.5);
-				//System.out.println("QROut " + (outputH+outputR)/1024/1024);
 				return outputH+outputR; 
-				
 			}
 			else if ( getFunctionName().equalsIgnoreCase("lu") ) {
 				// upper-triangular and lower-triangular matrices
 				long outputP = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(1).getDim1(), getOutputs().get(1).getDim2(), 1.0/getOutputs().get(1).getDim2());
 				long outputL = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(0).getDim1(), getOutputs().get(0).getDim2(), 0.5);
 				long outputU = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(1).getDim1(), getOutputs().get(1).getDim2(), 0.5);
-				//System.out.println("LUOut " + (outputL+outputU+outputP)/1024/1024);
 				return outputL+outputU+outputP; 
-				
 			}
 			else if ( getFunctionName().equalsIgnoreCase("eigen") ) {
 				long outputVectors = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(0).getDim1(), getOutputs().get(0).getDim2(), 1.0);
 				long outputValues = OptimizerUtils.estimateSizeExactSparsity(getOutputs().get(1).getDim1(), 1, 1.0);
-				//System.out.println("EigenOut " + (outputVectors+outputValues)/1024/1024);
 				return outputVectors+outputValues; 
-				
 			}
 			else
 				throw new RuntimeException("Invalid call of computeOutputMemEstimate in FunctionOp.");
@@ -221,16 +214,13 @@ public class FunctionOp extends Hop
 
 		ExecType et = optFindExecType();
 		
-		if ( et != ExecType.CP ) {
-			throw new HopsException("Invalid execution type for function: " + _fname);
-		}
 		//construct input lops (recursive)
 		ArrayList<Lop> tmp = new ArrayList<Lop>();
 		for( Hop in : getInput() )
 			tmp.add( in.constructLops() );
 		
 		//construct function call
-		FunctionCallCP fcall = new FunctionCallCP( tmp, _fnamespace, _fname, _outputs, _outputHops );
+		FunctionCallCP fcall = new FunctionCallCP( tmp, _fnamespace, _fname, _outputs, _outputHops, et );
 		setLineNumbers( fcall );
 		setLops( fcall );
 	
@@ -249,23 +239,30 @@ public class FunctionOp extends Hop
 	protected ExecType optFindExecType() 
 		throws HopsException 
 	{
+		checkAndSetForcedPlatform();
+		
 		if ( getFunctionType() == FunctionType.MULTIRETURN_BUILTIN ) {
-			// Since the memory estimate is only conservative, do not throw
-			// exception if the estimated memory is larger than the budget
-			// Nevertheless, memory estimates these functions are useful for 
-			// other purposes, such as compiling parfor
-			return ExecType.CP;
 			
 			// check if there is sufficient memory to execute this function
-			/*if ( getMemEstimate() < OptimizerUtils.getMemBudget(true) ) {
-				return ExecType.CP;
-			}
+			if( getFunctionName().equalsIgnoreCase("transformencode") ) {
+				_etype = ((_etypeForced==ExecType.SPARK 
+					|| (getMemEstimate() >= OptimizerUtils.getLocalMemBudget()
+						&& OptimizerUtils.isSparkExecutionMode())) ? ExecType.SPARK : ExecType.CP);
+			}	
 			else {
-				throw new HopsException("Insufficient memory to execute function: " + getFunctionName());
-			}*/
+				// Since the memory estimate is only conservative, do not throw
+				// exception if the estimated memory is larger than the budget
+				// Nevertheless, memory estimates these functions are useful for 
+				// other purposes, such as compiling parfor
+				_etype = ExecType.CP;
+			}
 		}
-		// the actual function call is always CP
-		return ExecType.CP;
+		else {
+			// the actual function call is always CP
+			_etype = ExecType.CP;
+		}
+		
+		return _etype;
 	}
 
 	@Override
@@ -275,6 +272,7 @@ public class FunctionOp extends Hop
 	}
 	
 	@Override
+	@SuppressWarnings("unchecked")
 	public Object clone() throws CloneNotSupportedException 
 	{
 		FunctionOp ret = new FunctionOp();	
@@ -287,6 +285,8 @@ public class FunctionOp extends Hop
 		ret._fnamespace = _fnamespace;
 		ret._fname = _fname;
 		ret._outputs = _outputs.clone();
+		if( _outputHops != null )
+			ret._outputHops = (ArrayList<Hop>) _outputHops.clone();
 		
 		return ret;
 	}

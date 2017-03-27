@@ -35,11 +35,9 @@ through the specification of a high-level declarative machine learning language
 that comes in two flavors, one with an R-like syntax (DML) and one with
 a Python-like syntax (PyDML).
 
-Algorithm scripts written in DML and PyDML can be run on Hadoop, on Spark, or
-in Standalone mode. No script modifications are required to change between modes.
-SystemML automatically performs advanced
-optimizations based on data and cluster characteristics, so much of the need to manually
-tweak algorithms is largely reduced or eliminated.
+Algorithm scripts written in DML and PyDML can be run on Spark, on Hadoop, or
+in Standalone mode. SystemML also features an MLContext API that allows SystemML
+to be accessed via Scala or Python from a Spark Shell, a Jupyter Notebook, or a Zeppelin Notebook.
 
 This Beginner's Guide serves as a starting point for writing DML and PyDML
 scripts.
@@ -52,42 +50,13 @@ DML and PyDML scripts can be invoked in a variety of ways. Suppose that we have 
 
 	print('hello ' + $1)
 
-One way to begin working with SystemML is to build the project and unpack the standalone distribution,
-which features the `runStandaloneSystemML.sh` and `runStandaloneSystemML.bat` scripts. The name of the DML or PyDML script
-is passed as the first argument to these scripts, along with a variety of arguments.
+One way to begin working with SystemML is to [download a binary distribution of SystemML](http://systemml.apache.org/download.html)
+and use the `runStandaloneSystemML.sh` and `runStandaloneSystemML.bat` scripts to run SystemML in standalone
+mode. The name of the DML or PyDML script is passed as the first argument to these scripts,
+along with a variety of arguments. Note that PyDML invocation can be forced with the addition of a `-python` flag.
 
 	./runStandaloneSystemML.sh hello.dml -args world
-	./runStandaloneSystemML.sh hello.pydml -python -args world
-
-For DML and PyDML script invocations that take multiple arguments, a common technique is to create
-a standard script that invokes `runStandaloneSystemML.sh` or `runStandaloneSystemML.bat` with the arguments specified.
-
-SystemML itself is written in Java and is managed using Maven. As a result, SystemML can readily be
-imported into a standard development environment such as Eclipse.
-The `DMLScript` class serves as the main entrypoint to SystemML. Executing
-`DMLScript` with no arguments displays usage information. A script file can be specified using the `-f` argument.
-
-In Eclipse, a Debug Configuration can be created with `DMLScript` as the Main class and any arguments specified as
-Program arguments. A PyDML script requires the addition of a `-python` switch.
-
-<div class="codetabs2">
-
-<div data-lang="Eclipse Debug Configuration - Main" markdown="1">
-![Eclipse Debug Configuration - Main](img/beginners-guide-to-dml-and-pydml/dmlscript-debug-configuration-hello-world-main-class.png "DMLScript Debug Configuration, Main class")
-</div>
-
-<div data-lang="Eclipse Debug Configuration - Arguments" markdown="1">
-![Eclipse Debug Configuration - Arguments](img/beginners-guide-to-dml-and-pydml/dmlscript-debug-configuration-hello-world-program-arguments.png "DMLScript Debug Configuration, Program arguments")
-</div>
-
-</div>
-
-SystemML contains a default set of configuration information. In addition to this, SystemML looks for a default `./SystemML-config.xml` file in the working directory, where overriding configuration information can be specified. Furthermore, a config file can be specified using the `-config` argument, as in this example:
-
-	-f hello.dml -config=src/main/standalone/SystemML-config.xml -args world
-
-When operating in a distributed environment, it is *highly recommended* that cluster-specific configuration information
-is provided to SystemML via a configuration file for optimal performance.
+	./runStandaloneSystemML.sh hello.pydml -args world
 
 
 # Data Types
@@ -177,7 +146,6 @@ print('eStr = ' + eStr)
 A matrix can be created in DML using the **`matrix()`** function and in PyDML using the **`full()`** 
 function. In the example below, a matrix element is still considered to be of the matrix data type,
 so the value is cast to a scalar in order to print it. Matrix element values are of type **double**/**float**.
-*Note that matrices index from 1 in both DML and PyDML.*
 
 <div class="codetabs2">
 
@@ -196,14 +164,14 @@ for (i in 1:nrow(m)) {
 <div data-lang="PyDML" markdown="1">
 {% highlight python %}
 m = full("1 2 3 4 5 6 7 8 9 10 11 12", rows=4, cols=3)
-for (i in 1:nrow(m)):
-    for (j in 1:ncol(m)):
+for (i in 0:nrow(m)-1):
+    for (j in 0:ncol(m)-1):
         n = m[i,j]
         print('[' + i + ',' + j + ']:' + scalar(n))
 {% endhighlight %}
 </div>
 
-<div data-lang="Result" markdown="1">
+<div data-lang="DML Result" markdown="1">
 	[1,1]:1.0
 	[1,2]:2.0
 	[1,3]:3.0
@@ -218,11 +186,55 @@ for (i in 1:nrow(m)):
 	[4,3]:12.0
 </div>
 
+<div data-lang="PyDML Result" markdown="1">
+	[0,0]:1.0
+	[0,1]:2.0
+	[0,2]:3.0
+	[1,0]:4.0
+	[1,1]:5.0
+	[1,2]:6.0
+	[2,0]:7.0
+	[2,1]:8.0
+	[2,2]:9.0
+	[3,0]:10.0
+	[3,1]:11.0
+	[3,2]:12.0
 </div>
 
+</div>
+
+We can also output the matrix element values using the **`toString`** function:
+
+<div class="codetabs2">
+
+<div data-lang="DML" markdown="1">
+{% highlight r %}
+m = matrix("1 2 3 4 5 6 7 8 9 10 11 12", rows=4, cols=3)
+print(toString(m, sep=" | ", decimal=1))
+{% endhighlight %}
+</div>
+
+<div data-lang="PyDML" markdown="1">
+{% highlight python %}
+m = full("1 2 3 4 5 6 7 8 9 10 11 12", rows=4, cols=3)
+print(toString(m, sep=" | ", decimal=1))
+{% endhighlight %}
+</div>
+
+<div data-lang="Result" markdown="1">
+	1.0 | 2.0 | 3.0
+	4.0 | 5.0 | 6.0
+	7.0 | 8.0 | 9.0
+	10.0 | 11.0 | 12.0
+</div>
+
+</div>
+
+
 For additional information about the **`matrix()`** and **`full()`** functions, please see the 
-DML Language Reference ([Matrix Construction](dml-language-reference.html#matrix-construction-manipulation-and-aggregation-built-in-functions)) and the 
-PyDML Language Reference (Matrix Construction).
+[Matrix Construction](dml-language-reference.html#matrix-construction-manipulation-and-aggregation-built-in-functions)
+section of the Language Reference. For information about the **`toString()`** function, see
+the [Other Built-In Functions](dml-language-reference.html#other-built-in-functions) section of the Language Reference.
 
 
 ## Saving a Matrix
@@ -255,7 +267,9 @@ save(m, "m.binary", format="binary")
 </div>
 
 Saving a matrix automatically creates a metadata file for each format except for Matrix Market, since Matrix Market contains
-metadata within the *.mm file. All formats are text-based except binary. The contents of the resulting files are shown here.
+metadata within the \*.mm file. All formats are text-based except binary. The contents of the resulting files are shown here.
+*Note that the **`text`** (`i,j,v`) and **`mm`** (`Matrix Market`) formats index from 1, even when working with PyDML, which
+is 0-based.*
 
 <div class="codetabs2">
 
@@ -269,14 +283,15 @@ metadata within the *.mm file. All formats are text-based except binary. The con
 </div>
 
 <div data-lang="m.txt.mtd" markdown="1">
-	{ 
-	    "data_type": "matrix"
-	    ,"value_type": "double"
-	    ,"rows": 4
-	    ,"cols": 3
-	    ,"nnz": 6
-	    ,"format": "text"
-	    ,"description": { "author": "SystemML" } 
+	{
+	    "data_type": "matrix",
+	    "value_type": "double",
+	    "rows": 4,
+	    "cols": 3,
+	    "nnz": 6,
+	    "format": "text",
+	    "author": "SystemML",
+	    "created": "2017-01-01 00:00:01 PST"
 	}
 </div>
 
@@ -299,16 +314,17 @@ metadata within the *.mm file. All formats are text-based except binary. The con
 </div>
 
 <div data-lang="m.csv.mtd" markdown="1">
-	{ 
-	    "data_type": "matrix"
-	    ,"value_type": "double"
-	    ,"rows": 4
-	    ,"cols": 3
-	    ,"nnz": 6
-	    ,"format": "csv"
-	    ,"header": false
-	    ,"sep": ","
-	    ,"description": { "author": "SystemML" } 
+	{
+	    "data_type": "matrix",
+	    "value_type": "double",
+	    "rows": 4,
+	    "cols": 3,
+	    "nnz": 6,
+	    "format": "csv",
+	    "header": false,
+	    "sep": ",",
+	    "author": "SystemML",
+	    "created": "2017-01-01 00:00:01 PST"
 	}
 </div>
 
@@ -317,16 +333,17 @@ metadata within the *.mm file. All formats are text-based except binary. The con
 </div>
 
 <div data-lang="m.binary.mtd" markdown="1">
-	{ 
-	    "data_type": "matrix"
-	    ,"value_type": "double"
-	    ,"rows": 4
-	    ,"cols": 3
-	    ,"rows_in_block": 1000
-	    ,"cols_in_block": 1000
-	    ,"nnz": 6
-	    ,"format": "binary"
-	    ,"description": { "author": "SystemML" } 
+	{
+	    "data_type": "matrix",
+	    "value_type": "double",
+	    "rows": 4,
+	    "cols": 3,
+	    "rows_in_block": 1000,
+	    "cols_in_block": 1000,
+	    "nnz": 6,
+	    "format": "binary",
+	    "author": "SystemML",
+	    "created": "2017-01-01 00:00:01 PST"
 	}
 </div>
 
@@ -337,13 +354,14 @@ metadata within the *.mm file. All formats are text-based except binary. The con
 
 A matrix can be loaded using the **`read()`** function in DML and the **`load()`** function in PyDML. As with saving, SystemML supports four
 formats: **`text`** (`i,j,v`), **`mm`** (`Matrix Market`), **`csv`** (`delimiter-separated values`), and **`binary`**. To read a file, a corresponding
-metadata file is required, except for the Matrix Market format.
+metadata file is required, except for the Matrix Market format. A metadata file is not required if a `format` parameter is specified to the **`read()`**
+or **`load()`** functions.
 
 <div class="codetabs2">
 
 <div data-lang="DML" markdown="1">
 {% highlight r %}
-m = read("m.txt")
+m = read("m.csv")
 print("min:" + min(m))
 print("max:" + max(m))
 print("sum:" + sum(m))
@@ -360,20 +378,21 @@ for (i in 1:ncol(mColSums)) {
 
 <div data-lang="PyDML" markdown="1">
 {% highlight python %}
-m = load("m.txt")
+m = load("m.csv")
 print("min:" + min(m))
 print("max:" + max(m))
 print("sum:" + sum(m))
 mRowSums = rowSums(m)
-for (i in 1:nrow(mRowSums)):
-    print("row " + i + " sum:" + scalar(mRowSums[i,1]))
+for (i in 0:nrow(mRowSums)-1):
+    print("row " + i + " sum:" + scalar(mRowSums[i,0]))
 mColSums = colSums(m)
-for (i in 1:ncol(mColSums)):
-    print("col " + i + " sum:" + scalar(mColSums[1,i]))
+for (i in 0:ncol(mColSums)-1):
+    print("col " + i + " sum:" + scalar(mColSums[0,i]))
+    
 {% endhighlight %}
 </div>
 
-<div data-lang="Result" markdown="1">
+<div data-lang="DML Result" markdown="1">
 	min:0.0
 	max:9.0
 	sum:30.0
@@ -386,96 +405,82 @@ for (i in 1:ncol(mColSums)):
 	col 3 sum:12.0
 </div>
 
+<div data-lang="PyDML Result" markdown="1">
+	min:0.0
+	max:9.0
+	sum:30.0
+	row 0 sum:6.0
+	row 1 sum:0.0
+	row 2 sum:24.0
+	row 3 sum:0.0
+	col 0 sum:8.0
+	col 1 sum:10.0
+	col 2 sum:12.0
+</div>
+
 </div>
 
 
 ## Matrix Operations
 
 DML and PyDML offer a rich set of operators and built-in functions to perform various operations on matrices and scalars.
-Operators and built-in functions are described in great detail in the DML Language Reference 
-([Expressions](dml-language-reference.html#expressions), [Built-In Functions](dml-language-reference.html#built-in-functions))
-and the PyDML Language Reference
-(Expressions, Built-In Functions).
+Operators and built-in functions are described in great detail in the Language Reference
+([Expressions](dml-language-reference.html#expressions), [Built-In Functions](dml-language-reference.html#built-in-functions)).
 
 In this example, we create a matrix A. Next, we create another matrix B by adding 4 to each element in A. Next, we flip
 B by taking its transpose. We then multiply A and B, represented by matrix C. We create a matrix D with the same number
 of rows and columns as C, and initialize its elements to 5. We then subtract D from C and divide the values of its elements
 by 2 and assign the resulting matrix to D.
 
-This example also shows a user-defined function called `printMatrix()`, which takes a string and matrix as arguments and returns
-nothing.
-
 <div class="codetabs2">
 
 <div data-lang="DML" markdown="1">
 {% highlight r %}
-printMatrix = function(string which, matrix[double] mat) {
-    print(which)
-    for (i in 1:nrow(mat)) {
-        colVals = '| '
-        for (j in 1:ncol(mat)) {
-            n = mat[i,j]
-            colVals = colVals + as.scalar(n) + ' | '
-        }
-        print(colVals)
-    }
-}
-
 A = matrix("1 2 3 4 5 6", rows=3, cols=2)
-z = printMatrix('Matrix A:', A)
+print(toString(A))
 B = A + 4
 B = t(B)
-z = printMatrix('Matrix B:', B)
+print(toString(B))
 C = A %*% B
-z = printMatrix('Matrix C:', C)
+print(toString(C))
 D = matrix(5, rows=nrow(C), cols=ncol(C))
 D = (C - D) / 2
-z = printMatrix('Matrix D:', D)
+print(toString(D))
 
 {% endhighlight %}
 </div>
 
 <div data-lang="PyDML" markdown="1">
 {% highlight python %}
-def printMatrix(which: str, mat: matrix[float]):
-    print(which)
-    for (i in 1:nrow(mat)):
-        colVals = '| '
-        for (j in 1:ncol(mat)):
-            n = mat[i,j]
-            colVals = colVals + scalar(n) + ' | '
-        print(colVals)
-
 A = full("1 2 3 4 5 6", rows=3, cols=2)
-z = printMatrix('Matrix A:', A)
+print(toString(A))
 B = A + 4
 B = transpose(B)
-z = printMatrix('Matrix B:', B)
+print(toString(B))
 C = dot(A, B)
-z = printMatrix('Matrix C:', C)
+print(toString(C))
 D = full(5, rows=nrow(C), cols=ncol(C))
 D = (C - D) / 2
-z = printMatrix('Matrix D:', D)
+print(toString(D))
 
 {% endhighlight %}
 </div>
 
 <div data-lang="Result" markdown="1">
-	Matrix A:
-	| 1.0 | 2.0 | 
-	| 3.0 | 4.0 | 
-	| 5.0 | 6.0 | 
-	Matrix B:
-	| 5.0 | 7.0 | 9.0 | 
-	| 6.0 | 8.0 | 10.0 | 
-	Matrix C:
-	| 17.0 | 23.0 | 29.0 | 
-	| 39.0 | 53.0 | 67.0 | 
-	| 61.0 | 83.0 | 105.0 | 
-	Matrix D:
-	| 6.0 | 9.0 | 12.0 | 
-	| 17.0 | 24.0 | 31.0 | 
-	| 28.0 | 39.0 | 50.0 | 
+	1.000 2.000
+	3.000 4.000
+	5.000 6.000
+	
+	5.000 7.000 9.000
+	6.000 8.000 10.000
+	
+	17.000 23.000 29.000
+	39.000 53.000 67.000
+	61.000 83.000 105.000
+	
+	6.000 9.000 12.000
+	17.000 24.000 31.000
+	28.000 39.000 50.000
 </div>
 
 </div>
@@ -485,81 +490,60 @@ z = printMatrix('Matrix D:', D)
 
 The elements in a matrix can be accessed by their row and column indices. In the example below, we have 3x3 matrix A.
 First, we access the element at the third row and third column. Next, we obtain a row slice (vector) of the matrix by
-specifying row 2 and leaving the column blank. We obtain a column slice (vector) by leaving the row blank and specifying
-column 3. After that, we obtain a submatrix via range indexing, where we specify rows 2 to 3, separated by a colon, and columns
-1 to 2, separated by a colon.
+specifying the row and leaving the column blank. We obtain a column slice (vector) by leaving the row blank and specifying
+the column. After that, we obtain a submatrix via range indexing, where we specify rows, separated by a colon, and columns,
+separated by a colon.
 
 <div class="codetabs2">
 
 <div data-lang="DML" markdown="1">
 {% highlight r %}
-printMatrix = function(string which, matrix[double] mat) {
-    print(which)
-    for (i in 1:nrow(mat)) {
-        colVals = '| '
-        for (j in 1:ncol(mat)) {
-            n = mat[i,j]
-            colVals = colVals + as.scalar(n) + ' | '
-        }
-        print(colVals)
-    }
-}
-
 A = matrix("1 2 3 4 5 6 7 8 9", rows=3, cols=3)
-z = printMatrix('Matrix A:', A)
+print(toString(A))
 B = A[3,3]
-z = printMatrix('Matrix B:', B)
+print(toString(B))
 C = A[2,]
-z = printMatrix('Matrix C:', C)
+print(toString(C))
 D = A[,3]
-z = printMatrix('Matrix D:', D)
+print(toString(D))
 E = A[2:3,1:2]
-z = printMatrix('Matrix E:', E)
+print(toString(E))
 
 {% endhighlight %}
 </div>
 
 <div data-lang="PyDML" markdown="1">
 {% highlight python %}
-def printMatrix(which: str, mat: matrix[float]):
-    print(which)
-    for (i in 1:nrow(mat)):
-        colVals = '| '
-        for (j in 1:ncol(mat)):
-            n = mat[i,j]
-            colVals = colVals + scalar(n) + ' | '
-        print(colVals)
-
 A = full("1 2 3 4 5 6 7 8 9", rows=3, cols=3)
-z = printMatrix('Matrix A:', A)
-B = A[3,3]
-z = printMatrix('Matrix B:', B)
-C = A[2,]
-z = printMatrix('Matrix C:', C)
-D = A[,3]
-z = printMatrix('Matrix D:', D)
-E = A[2:3,1:2]
-z = printMatrix('Matrix E:', E)
+print(toString(A))
+B = A[2,2]
+print(toString(B))
+C = A[1,]
+print(toString(C))
+D = A[,2]
+print(toString(D))
+E = A[1:3,0:2]
+print(toString(E))
 
 {% endhighlight %}
 </div>
 
 <div data-lang="Result" markdown="1">
-	Matrix A:
-	| 1.0 | 2.0 | 3.0 | 
-	| 4.0 | 5.0 | 6.0 | 
-	| 7.0 | 8.0 | 9.0 | 
-	Matrix B:
-	| 9.0 | 
-	Matrix C:
-	| 4.0 | 5.0 | 6.0 | 
-	Matrix D:
-	| 3.0 | 
-	| 6.0 | 
-	| 9.0 | 
-	Matrix E:
-	| 4.0 | 5.0 | 
-	| 7.0 | 8.0 | 
+	1.000 2.000 3.000
+	4.000 5.000 6.000
+	7.000 8.000 9.000
+	
+	9.000
+	
+	4.000 5.000 6.000
+	
+	3.000
+	6.000
+	9.000
+	
+	4.000 5.000
+	7.000 8.000
+	
 </div>
 
 </div>
@@ -567,24 +551,25 @@ z = printMatrix('Matrix E:', E)
 
 # Control Statements
 
-DML and PyDML both feature `if` and `if-else` conditional statements. In addition, DML features `else-if` which avoids the
-need for nested conditional statements.
+DML and PyDML both feature `if`, `if-else`, and `if-else-if` conditional statements.
 
 DML and PyDML feature 3 loop statements: `while`, `for`, and `parfor` (parallel for). In the example, note that the 
 `print` statements within the `parfor` loop can occur in any order since the iterations occur in parallel rather than
 sequentially as in a regular `for` loop. The `parfor` statement can include several optional parameters, as described
-in the DML Language Reference ([ParFor Statement](dml-language-reference.html#parfor-statement)) and PyDML Language Reference (ParFor Statement).
+in the Language Reference ([ParFor Statement](dml-language-reference.html#parfor-statement)).
 
 <div class="codetabs2">
 
 <div data-lang="DML" markdown="1">
 {% highlight r %}
 i = 1
-while (i < 3) {
+while (i <= 3) {
     if (i == 1) {
         print('hello')
-    } else {
+    } else if (i == 2) {
         print('world')
+    } else {
+        print('!!!')
     }
     i = i + 1
 }
@@ -598,38 +583,55 @@ for (i in 1:nrow(A)) {
 parfor(i in 1:nrow(A)) {
     print("parfor A[" + i + ",1]:" + as.scalar(A[i,1]))
 }
+
 {% endhighlight %}
 </div>
 
 <div data-lang="PyDML" markdown="1">
 {% highlight python %}
 i = 1
-while (i < 3):
+while (i <= 3):
     if (i == 1):
         print('hello')
-    else:
+    elif (i == 2):
         print('world')
+    else:
+        print('!!!')
     i = i + 1
 
 A = full("1 2 3 4 5 6", rows=3, cols=2)
 
-for (i in 1:nrow(A)):
-    print("for A[" + i + ",1]:" + scalar(A[i,1]))
+for (i in 0:nrow(A)-1):
+    print("for A[" + i + ",0]:" + scalar(A[i,0]))
 
-parfor(i in 1:nrow(A)):
-    print("parfor A[" + i + ",1]:" + scalar(A[i,1]))
+parfor(i in 0:nrow(A)-1):
+    print("parfor A[" + i + ",0]:" + scalar(A[i,0]))
+
 {% endhighlight %}
 </div>
 
-<div data-lang="Result" markdown="1">
+<div data-lang="DML Result" markdown="1">
 	hello
 	world
+	!!!
 	for A[1,1]:1.0
 	for A[2,1]:3.0
 	for A[3,1]:5.0
 	parfor A[2,1]:3.0
 	parfor A[1,1]:1.0
 	parfor A[3,1]:5.0
+</div>
+
+<div data-lang="PyDML Result" markdown="1">
+	hello
+	world
+	!!!
+	for A[0,0]:1.0
+	for A[1,0]:3.0
+	for A[2,0]:5.0
+	parfor A[0,0]:1.0
+	parfor A[2,0]:5.0
+	parfor A[1,0]:3.0
 </div>
 
 </div>
@@ -639,7 +641,6 @@ parfor(i in 1:nrow(A)):
 
 Functions encapsulate useful functionality in SystemML. In addition to built-in functions, users can define their own functions.
 Functions take 0 or more parameters and return 0 or more values.
-Currently, if a function returns nothing, it still needs to be assigned to a variable.
 
 <div class="codetabs2">
 
@@ -747,8 +748,8 @@ numColsToPrint = ifdef($colsToPrint, 2) # default to 2
 
 m = load(fileM)
 
-for (i in 1:numRowsToPrint):
-    for (j in 1:numColsToPrint):
+for (i in 0:numRowsToPrint-1):
+    for (j in 0:numColsToPrint-1):
         print('[' + i + ',' + j + ']:' + scalar(m[i,j]))
 
 {% endhighlight %}
@@ -756,7 +757,7 @@ for (i in 1:numRowsToPrint):
 
 <div data-lang="DML Named Arguments and Results" markdown="1">
 	Example #1 Arguments:
-	-f ex.dml -nvargs M=M.txt rowsToPrint=1 colsToPrint=3
+	-f ex.dml -nvargs M=m.csv rowsToPrint=1 colsToPrint=3
 	
 	Example #1 Results:
 	[1,1]:1.0
@@ -764,7 +765,7 @@ for (i in 1:numRowsToPrint):
 	[1,3]:3.0
 	
 	Example #2 Arguments:
-	-f ex.dml -nvargs M=M.txt
+	-f ex.dml -nvargs M=m.csv
 	
 	Example #2 Results:
 	[1,1]:1.0
@@ -776,21 +777,21 @@ for (i in 1:numRowsToPrint):
 
 <div data-lang="PyDML Named Arguments and Results" markdown="1">
 	Example #1 Arguments:
-	-f ex.pydml -python -nvargs M=M.txt rowsToPrint=1 colsToPrint=3
+	-f ex.pydml -nvargs M=m.csv rowsToPrint=1 colsToPrint=3
 	
 	Example #1 Results:
-	[1,1]:1.0
-	[1,2]:2.0
-	[1,3]:3.0
+	[0,0]:1.0
+	[0,1]:2.0
+	[0,2]:3.0
 	
 	Example #2 Arguments:
-	-f ex.pydml -python -nvargs M=M.txt
+	-f ex.pydml -nvargs M=m.csv
 	
 	Example #2 Results:
-	[1,1]:1.0
-	[1,2]:2.0
-	[2,1]:0.0
-	[2,2]:0.0
+	[0,0]:1.0
+	[0,1]:2.0
+	[1,0]:0.0
+	[1,1]:0.0
 	
 </div>
 
@@ -829,8 +830,8 @@ numColsToPrint = ifdef($3, 2) # default to 2
 
 m = load(fileM)
 
-for (i in 1:numRowsToPrint):
-    for (j in 1:numColsToPrint):
+for (i in 0:numRowsToPrint-1):
+    for (j in 0:numColsToPrint-1):
         print('[' + i + ',' + j + ']:' + scalar(m[i,j]))
 
 {% endhighlight %}
@@ -838,7 +839,7 @@ for (i in 1:numRowsToPrint):
 
 <div data-lang="DML Positional Arguments and Results" markdown="1">
 	Example #1 Arguments:
-	-f ex.dml -args M.txt 1 3
+	-f ex.dml -args m.csv 1 3
 	
 	Example #1 Results:
 	[1,1]:1.0
@@ -846,7 +847,7 @@ for (i in 1:numRowsToPrint):
 	[1,3]:3.0
 	
 	Example #2 Arguments:
-	-f ex.dml -args M.txt
+	-f ex.dml -args m.csv
 	
 	Example #2 Results:
 	[1,1]:1.0
@@ -858,21 +859,21 @@ for (i in 1:numRowsToPrint):
 
 <div data-lang="PyDML Positional Arguments and Results" markdown="1">
 	Example #1 Arguments:
-	-f ex.pydml -python -args M.txt 1 3
+	-f ex.pydml -args m.csv 1 3
 	
 	Example #1 Results:
-	[1,1]:1.0
-	[1,2]:2.0
-	[1,3]:3.0
+	[0,0]:1.0
+	[0,1]:2.0
+	[0,2]:3.0
 	
 	Example #2 Arguments:
-	-f ex.pydml -python -args M.txt
+	-f ex.pydml -args m.csv
 	
 	Example #2 Results:
-	[1,1]:1.0
-	[1,2]:2.0
-	[2,1]:0.0
-	[2,2]:0.0
+	[0,0]:1.0
+	[0,1]:2.0
+	[1,0]:0.0
+	[1,1]:0.0
 	
 </div>
 
@@ -881,9 +882,7 @@ for (i in 1:numRowsToPrint):
 
 # Additional Information
 
-The [DML Language Reference](dml-language-reference.html) and PyDML Language Reference contain highly detailed information regard DML 
-and PyDML.
+The [Language Reference](dml-language-reference.html) contains highly detailed information regarding DML.
 
-In addition, many excellent examples of DML and PyDML can be found in the `system-ml/scripts` and 
-`system-ml/test/scripts/applications` directories.
+In addition, many excellent examples can be found in the [`scripts`](https://github.com/apache/incubator-systemml/tree/master/scripts) directory.
 

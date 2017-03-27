@@ -1,4 +1,5 @@
 /*
+
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -21,11 +22,11 @@ package org.apache.sysml.runtime.instructions;
 
 import java.util.HashMap;
 
+import org.apache.sysml.lops.AppendCP;
 import org.apache.sysml.lops.DataGen;
-import org.apache.sysml.lops.UnaryCP;
 import org.apache.sysml.lops.LopProperties.ExecType;
+import org.apache.sysml.lops.UnaryCP;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.cp.AggregateBinaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.AggregateTernaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.AggregateUnaryCPInstruction;
@@ -34,9 +35,13 @@ import org.apache.sysml.runtime.instructions.cp.ArithmeticBinaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.BooleanBinaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.BooleanUnaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.BuiltinBinaryCPInstruction;
+import org.apache.sysml.runtime.instructions.cp.BuiltinMultipleCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.BuiltinUnaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.CPInstruction;
+import org.apache.sysml.runtime.instructions.cp.CPInstruction.CPINSTRUCTION_TYPE;
 import org.apache.sysml.runtime.instructions.cp.CentralMomentCPInstruction;
+import org.apache.sysml.runtime.instructions.cp.CompressionCPInstruction;
+import org.apache.sysml.runtime.instructions.cp.ConvolutionCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.CovarianceCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.DataGenCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.DataPartitionCPInstruction;
@@ -47,18 +52,20 @@ import org.apache.sysml.runtime.instructions.cp.MMChainCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.MMTSJCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.MatrixReshapeCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.MultiReturnBuiltinCPInstruction;
+import org.apache.sysml.runtime.instructions.cp.MultiReturnParameterizedBuiltinCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.PMMJCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.ParameterizedBuiltinCPInstruction;
+import org.apache.sysml.runtime.instructions.cp.PlusMultCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.QuantilePickCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.QuantileSortCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.QuaternaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.RelationalBinaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.ReorgCPInstruction;
+import org.apache.sysml.runtime.instructions.cp.SpoofCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.StringInitCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.TernaryCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.UaggOuterChainCPInstruction;
 import org.apache.sysml.runtime.instructions.cp.VariableCPInstruction;
-import org.apache.sysml.runtime.instructions.cp.CPInstruction.CPINSTRUCTION_TYPE;
 import org.apache.sysml.runtime.instructions.cpfile.MatrixIndexingCPFileInstruction;
 import org.apache.sysml.runtime.instructions.cpfile.ParameterizedBuiltinCPFileInstruction;
 
@@ -72,7 +79,8 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType = new HashMap<String, CPINSTRUCTION_TYPE>();
 
 		String2CPInstructionType.put( "ba+*"   	, CPINSTRUCTION_TYPE.AggregateBinary);
-		String2CPInstructionType.put( "tak+*"   	, CPINSTRUCTION_TYPE.AggregateTernary);
+		String2CPInstructionType.put( "tak+*"   , CPINSTRUCTION_TYPE.AggregateTernary);
+		String2CPInstructionType.put( "tack+*"  , CPINSTRUCTION_TYPE.AggregateTernary);
 		
 		String2CPInstructionType.put( "uak+"   	, CPINSTRUCTION_TYPE.AggregateUnary);
 		String2CPInstructionType.put( "uark+"   , CPINSTRUCTION_TYPE.AggregateUnary);
@@ -118,7 +126,9 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType.put( "^2"   , CPINSTRUCTION_TYPE.ArithmeticBinary); //special ^ case
 		String2CPInstructionType.put( "*2"   , CPINSTRUCTION_TYPE.ArithmeticBinary); //special * case
 		String2CPInstructionType.put( "-nz"  , CPINSTRUCTION_TYPE.ArithmeticBinary); //special - case
-		
+		String2CPInstructionType.put( "+*"  , CPINSTRUCTION_TYPE.ArithmeticBinary); 
+		String2CPInstructionType.put( "-*"  , CPINSTRUCTION_TYPE.ArithmeticBinary); 
+
 		
 		// Boolean Instruction Opcodes 
 		String2CPInstructionType.put( "&&"   , CPINSTRUCTION_TYPE.BooleanBinary);
@@ -172,6 +182,7 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType.put( "sigmoid", CPINSTRUCTION_TYPE.BuiltinUnary);
 		String2CPInstructionType.put( "sel+", CPINSTRUCTION_TYPE.BuiltinUnary);
 		
+		String2CPInstructionType.put( "printf" , CPINSTRUCTION_TYPE.BuiltinMultiple);
 		
 		// Parameterized Builtin Functions
 		String2CPInstructionType.put( "cdf"	 		, CPINSTRUCTION_TYPE.ParameterizedBuiltin);
@@ -183,7 +194,10 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType.put( "transform"	, CPINSTRUCTION_TYPE.ParameterizedBuiltin);
 		String2CPInstructionType.put( "transformapply",CPINSTRUCTION_TYPE.ParameterizedBuiltin);
 		String2CPInstructionType.put( "transformdecode",CPINSTRUCTION_TYPE.ParameterizedBuiltin);
-
+		String2CPInstructionType.put( "transformencode",CPINSTRUCTION_TYPE.MultiReturnParameterizedBuiltin);
+		String2CPInstructionType.put( "transformmeta",CPINSTRUCTION_TYPE.ParameterizedBuiltin);
+		String2CPInstructionType.put( "toString"    , CPINSTRUCTION_TYPE.ParameterizedBuiltin);
+		
 		// Variable Instruction Opcodes 
 		String2CPInstructionType.put( "assignvar"   , CPINSTRUCTION_TYPE.Variable);
 		String2CPInstructionType.put( "cpvar"    	, CPINSTRUCTION_TYPE.Variable);
@@ -192,6 +206,7 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType.put( "rmfilevar"   , CPINSTRUCTION_TYPE.Variable);
 		String2CPInstructionType.put( UnaryCP.CAST_AS_SCALAR_OPCODE, CPINSTRUCTION_TYPE.Variable);
 		String2CPInstructionType.put( UnaryCP.CAST_AS_MATRIX_OPCODE, CPINSTRUCTION_TYPE.Variable);
+		String2CPInstructionType.put( UnaryCP.CAST_AS_FRAME_OPCODE,  CPINSTRUCTION_TYPE.Variable);
 		String2CPInstructionType.put( UnaryCP.CAST_AS_DOUBLE_OPCODE, CPINSTRUCTION_TYPE.Variable);
 		String2CPInstructionType.put( UnaryCP.CAST_AS_INT_OPCODE,    CPINSTRUCTION_TYPE.Variable);
 		String2CPInstructionType.put( UnaryCP.CAST_AS_BOOLEAN_OPCODE, CPINSTRUCTION_TYPE.Variable);
@@ -206,7 +221,19 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType.put( "rdiag"       , CPINSTRUCTION_TYPE.Reorg);
 		String2CPInstructionType.put( "rshape"      , CPINSTRUCTION_TYPE.MatrixReshape);
 		String2CPInstructionType.put( "rsort"      , CPINSTRUCTION_TYPE.Reorg);
-	
+
+		// Opcodes related to convolutions
+		String2CPInstructionType.put( "relu_backward"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "relu_maxpooling"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "maxpooling"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "maxpooling_backward"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "conv2d"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "conv2d_bias_add"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "conv2d_backward_filter"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "conv2d_backward_data"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "bias_add"      , CPINSTRUCTION_TYPE.Convolution);
+		String2CPInstructionType.put( "bias_multiply"      , CPINSTRUCTION_TYPE.Convolution);
+		
 		// Quaternary instruction opcodes
 		String2CPInstructionType.put( "wsloss"  , CPINSTRUCTION_TYPE.Quaternary);
 		String2CPInstructionType.put( "wsigmoid", CPINSTRUCTION_TYPE.Quaternary);
@@ -217,7 +244,7 @@ public class CPInstructionParser extends InstructionParser
 		// User-defined function Opcodes
 		String2CPInstructionType.put( "extfunct"   	, CPINSTRUCTION_TYPE.External);
 
-		String2CPInstructionType.put( "append", CPINSTRUCTION_TYPE.Append);
+		String2CPInstructionType.put( AppendCP.OPCODE, CPINSTRUCTION_TYPE.Append);
 		
 		// data generation opcodes
 		String2CPInstructionType.put( DataGen.RAND_OPCODE   , CPINSTRUCTION_TYPE.Rand);
@@ -246,8 +273,9 @@ public class CPInstructionParser extends InstructionParser
 		String2CPInstructionType.put( "lu",    CPINSTRUCTION_TYPE.MultiReturnBuiltin);
 		String2CPInstructionType.put( "eigen", CPINSTRUCTION_TYPE.MultiReturnBuiltin);
 		
-		String2CPInstructionType.put( "partition", CPINSTRUCTION_TYPE.Partition);
-		
+		String2CPInstructionType.put( "partition", 	CPINSTRUCTION_TYPE.Partition);
+		String2CPInstructionType.put( "compress", 	CPINSTRUCTION_TYPE.Compression);
+		String2CPInstructionType.put( "spoof", 		CPINSTRUCTION_TYPE.SpoofFused);
 		
 		//CP FILE instruction
 		String2CPFileInstructionType = new HashMap<String, CPINSTRUCTION_TYPE>();
@@ -256,7 +284,7 @@ public class CPInstructionParser extends InstructionParser
 	}
 
 	public static CPInstruction parseSingleInstruction (String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		if ( str == null || str.isEmpty() )
 			return null;
@@ -271,7 +299,7 @@ public class CPInstructionParser extends InstructionParser
 	}
 	
 	public static CPInstruction parseSingleInstruction ( CPINSTRUCTION_TYPE cptype, String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		ExecType execType = null; 
 		
@@ -290,7 +318,11 @@ public class CPInstructionParser extends InstructionParser
 				return AggregateTernaryCPInstruction.parseInstruction(str);
 				
 			case ArithmeticBinary:
-				return ArithmeticBinaryCPInstruction.parseInstruction(str);
+				String opcode = InstructionUtils.getOpCode(str);
+				if( opcode.equals("+*") || opcode.equals("-*")  )
+					return PlusMultCPInstruction.parseInstruction(str);
+				else
+					return ArithmeticBinaryCPInstruction.parseInstruction(str);
 			
 			case Ternary:
 				return TernaryCPInstruction.parseInstruction(str);
@@ -309,9 +341,13 @@ public class CPInstructionParser extends InstructionParser
 				
 			case BuiltinUnary:
 				return BuiltinUnaryCPInstruction.parseInstruction(str);
-				
+			case BuiltinMultiple:
+				return BuiltinMultipleCPInstruction.parseInstruction(str);
 			case Reorg:
 				return ReorgCPInstruction.parseInstruction(str);
+				
+			case Convolution:
+				 return ConvolutionCPInstruction.parseInstruction(str);
 				
 			case UaggOuterChain:
 				return UaggOuterChainCPInstruction.parseInstruction(str);
@@ -347,6 +383,9 @@ public class CPInstructionParser extends InstructionParser
 				else //exectype CP_FILE
 					return ParameterizedBuiltinCPFileInstruction.parseInstruction(str);
 	
+			case MultiReturnParameterizedBuiltin:
+				return MultiReturnParameterizedBuiltinCPInstruction.parseInstruction(str);
+				
 			case MultiReturnBuiltin:
 				return MultiReturnBuiltinCPInstruction.parseInstruction(str);
 				
@@ -388,13 +427,19 @@ public class CPInstructionParser extends InstructionParser
 			
 			case Partition:
 				return DataPartitionCPInstruction.parseInstruction(str);	
-	
+		
 			case CentralMoment:
 				return CentralMomentCPInstruction.parseInstruction(str);
 	
 			case Covariance:
 				return CovarianceCPInstruction.parseInstruction(str);
-				
+	
+			case Compression:
+				return (CPInstruction) CompressionCPInstruction.parseInstruction(str);	
+			
+			case SpoofFused:
+				return SpoofCPInstruction.parseInstruction(str);
+			
 			case INVALID:
 			
 			default: 

@@ -19,7 +19,7 @@
 
 package org.apache.sysml.hops.globalopt;
 
-import com.google.common.base.Objects;
+import java.util.Arrays;
 
 /**
  * An instance of this class represents one 'interesting property set' defined by the instances
@@ -34,7 +34,7 @@ public class InterestingProperties
 	public enum Location {
 		MEM,
 		HDFS_CACHE,
-		HDFS,
+		HDFS
 	}
 	
 	public enum Format {
@@ -43,13 +43,13 @@ public class InterestingProperties
 		BINARY_CELL,
 		TEXT_CELL,
 		TEXT_MM,
-		TEXT_CSV,
+		TEXT_CSV
 	}
 	
 	public enum Partitioning {
 		NONE,
 		ROW_WISE,
-		COL_WISE,
+		COL_WISE
 		//ROW_BLOCK_WISE,
 		//COL_BLOCK_WISE,
 	}
@@ -101,15 +101,10 @@ public class InterestingProperties
 	@Override
 	public int hashCode()
 	{
-		//relies on google's guava library 
-		return Objects.hashCode(
-				   _blocksize, 
-				   (_format!=null)?_format.ordinal():-1,
-				   (_location!=null)?_location.ordinal():-1,
-				   (_pformat!=null)?_pformat.ordinal():-1,
-				   _replication,
-				   _emptyblocks
-			   );
+		Object[] array = new Object[] { _blocksize, (_format != null) ? _format.ordinal() : -1,
+				(_location != null) ? _location.ordinal() : -1, (_pformat != null) ? _pformat.ordinal() : -1,
+				_replication, _emptyblocks };
+		return Arrays.hashCode(array);
 	}
 	
 	@Override

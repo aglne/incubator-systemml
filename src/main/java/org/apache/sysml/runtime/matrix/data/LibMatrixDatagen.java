@@ -21,11 +21,13 @@
 package org.apache.sysml.runtime.matrix.data;
 
 import java.util.ArrayList;
-import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.stream.LongStream;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -37,13 +39,12 @@ import org.apache.sysml.runtime.util.NormalPRNGenerator;
 import org.apache.sysml.runtime.util.PRNGenerator;
 import org.apache.sysml.runtime.util.PoissonPRNGenerator;
 import org.apache.sysml.runtime.util.UniformPRNGenerator;
+import org.apache.sysml.runtime.util.UtilFunctions;
 
-/**
- *  
- */
 public class LibMatrixDatagen 
 {
-	protected static final Log LOG = LogFactory.getLog(LibMatrixDatagen.class.getName());
+	private static final Log LOG = LogFactory.getLog(LibMatrixDatagen.class.getName());
+	private static final long PAR_NUMCELL_THRESHOLD = 512*1024; //Min 500k elements
 	public static final String RAND_PDF_UNIFORM = "uniform";
 	public static final String RAND_PDF_NORMAL = "normal";
 	public static final String RAND_PDF_POISSON = "poisson";
@@ -53,39 +54,19 @@ public class LibMatrixDatagen
 	private LibMatrixDatagen() {
 		//prevent instantiation via private constructor
 	}
-	
-	/**
-	 * 
-	 * @param min
-	 * @param max
-	 * @param sparsity
-	 * @param pdf
-	 * @return
-	 */
+
 	public static boolean isShortcutRandOperation( double min, double max, double sparsity, String pdf )
 	{
 		return pdf.equalsIgnoreCase(RAND_PDF_UNIFORM)
 			   && (  ( min == 0.0 && max == 0.0 ) //all zeros
 				   ||( sparsity==1.0d && min == max )); //equal values
 	}
-	
-	/**
-	 * 
-	 * @param seq_from
-	 * @param seq_to
-	 * @param seq_incr
-	 * @return
-	 */
+
 	public static double updateSeqIncr(double seq_from, double seq_to, double seq_incr) {
 		//handle default 1 to -1 for special case of from>to
 		return (seq_from>seq_to && seq_incr==1)? -1 : seq_incr;
 	}
-	
-	/**
-	 * 
-	 * @param basedir
-	 * @return
-	 */
+
 	public static String generateUniqueSeedPath( String basedir ) {
 		return basedir + "tmp" + _seqRandInput.getNextID() + ".randinput";
 	}
@@ -98,8 +79,8 @@ public class LibMatrixDatagen
 	 * This function is invoked from both CP (RandCPInstruction.processInstruction()) 
 	 * as well as MR (RandMR.java while setting up the Rand job).
 	 * 
-	 * @param seed
-	 * @return
+	 * @param seed seed for random generator
+	 * @return Well1024a pseudo-random number generator
 	 */
 	public static Well1024a setupSeedsForRand(long seed) 
 	{
@@ -116,18 +97,8 @@ public class LibMatrixDatagen
 		
 		return bigrand;
 	}
-	
-	/**
-	 * 
-	 * @param nrow
-	 * @param ncol
-	 * @param brlen
-	 * @param bclen
-	 * @param sparsity
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
-	public static long[] computeNNZperBlock(long nrow, long ncol, int brlen, int bclen, double sparsity) 
+
+	public static LongStream computeNNZperBlock(long nrow, long ncol, int brlen, int bclen, double sparsity) 
 		throws DMLRuntimeException 
 	{
 		long lnumBlocks = (long) (Math.ceil((double)nrow/brlen) * Math.ceil((double)ncol/bclen));
@@ -138,91 +109,34 @@ public class LibMatrixDatagen
 					+ "Number of blocks ("+lnumBlocks+") exceeds the maximum integer size. Try to increase the block size.");
 		}
 
-		// NOTE: Total #of NNZ is set to the expected value (nrow*ncol*sparsity).
-		// TODO: Instead of using the expected value, NNZ should be random variable 
-		
 		int numBlocks = (int) lnumBlocks;
+		int numColBlocks = (int) Math.ceil((double)ncol/bclen);
 		long nnz = (long) Math.ceil (nrow * (ncol*sparsity));
 		
-		// Compute block-level NNZ
-		long[] ret  = new long[numBlocks];
-		
-		if ( nnz < numBlocks ) {
-			// Ultra-sparse matrix
-			
-			// generate the number of blocks with at least one non-zero
-			// = a random number between [1,nnz]
+		if( nnz < numBlocks ) {
+			//#1: ultra-sparse random number generation
+			//nnz per block: 1 with probability P = nnz/numBlocks, 0 with probability 1-P
+			//(note: this is an unbiased generator that, however, will never generate more than 
+			//one non-zero per block, but it uses weights to account for different block sizes)
+			double P = (double) nnz / numBlocks;
 			Random runif = new Random(System.nanoTime());
-			int numNZBlocks = 1;
-			if(nnz-1 > 0)
-				numNZBlocks += runif.nextInt((int)(nnz-1)); // To avoid exception from random.nextInt(0) 
-			
-			// distribute non-zeros across numNZBlocks
-
-			// compute proportions for each nzblock 
-			// - divide (0,1] interval into numNZBlocks portions of random size
-			double[] blockNNZproportions = new double[numNZBlocks];
-			
-			runif.setSeed(System.nanoTime());
-			for(int i=0; i < numNZBlocks-1; i++) {
-				blockNNZproportions[i] = runif.nextDouble();
-			}
-			blockNNZproportions[numNZBlocks-1] = 1;
-			// sort the values in ascending order
-			Arrays.sort(blockNNZproportions);
-			
-			// compute actual number of non zeros per block according to proportions
-			long actualnnz = 0;
-			int bid;
-			runif.setSeed(System.nanoTime());
-			for(int i=0; i < numNZBlocks; i++) {
-				bid = -1;
-				do {
-					bid = runif.nextInt(numBlocks);
-				} while( ret[bid] != 0);
-				
-				double prop = (i==0 ? blockNNZproportions[i]: (blockNNZproportions[i] - blockNNZproportions[i-1]));
-				ret[bid] = (long)Math.floor(prop * nnz);
-				actualnnz += ret[bid];
-			}
-			
-			// Code to make sure exact number of non-zeros are generated
-			while (actualnnz < nnz) {
-				bid = runif.nextInt(numBlocks);
-				ret[bid]++;
-				actualnnz++;
-			}
+			return LongStream.range(0, numBlocks).map( i -> {
+				double lP = P / (brlen*bclen) *
+					UtilFunctions.computeBlockSize(nrow, 1 + i / numColBlocks, brlen) *
+					UtilFunctions.computeBlockSize(ncol, 1 + i % numColBlocks, bclen);
+				return (runif.nextDouble() <= lP) ? 1 : 0;
+			});
 		}
 		else {
-			int bid = 0;
-			
-			for(long r = 0; r < nrow; r += brlen) {
-				long curBlockRowSize = Math.min(brlen, (nrow - r));
-				for(long c = 0; c < ncol; c += bclen)
-				{
-					long curBlockColSize = Math.min(bclen, (ncol - c));
-					ret[bid] = (long) (curBlockRowSize * curBlockColSize * sparsity);
-					bid++;
-				}
-			}
+			//#2: dense/sparse random number generation
+			//nnz per block: lrlen * lclen * sparsity (note: this is a biased generator 
+			//that might actually create fewer but never more non zeros than expected)
+			return LongStream.range(0, numBlocks).map( i -> (long)(sparsity * 
+				UtilFunctions.computeBlockSize(nrow, 1 + i / numColBlocks, brlen) *
+				UtilFunctions.computeBlockSize(ncol, 1 + i % numColBlocks, bclen)));
 		}
-		return ret;
 	}
 
-    /**
-     * 
-     * @param pdf
-     * @param r
-     * @param c
-     * @param rpb
-     * @param cpb
-     * @param sp
-     * @param min
-     * @param max
-     * @param distParams
-     * @return
-     * @throws DMLRuntimeException
-     */
     public static RandomMatrixGenerator createRandomMatrixGenerator(String pdf, int r, int c, int rpb, int cpb, double sp, double min, double max, String distParams) 
     	throws DMLRuntimeException
     {
@@ -261,38 +175,18 @@ public class LibMatrixDatagen
 	 * distribution N(0,1). The range of generated values will always be
 	 * (-Inf,+Inf).
 	 * 
-	 * @param rows
-	 * @param cols
-	 * @param rowsInBlock
-	 * @param colsInBlock
-	 * @param sparsity
-	 * @param min
-	 * @param max
-	 * @param bigrand
-	 * @param bSeed
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
-	public static void generateRandomMatrix( MatrixBlock out, RandomMatrixGenerator rgen, long[] nnzInBlocks, 
+     * @param out output matrix block
+     * @param rgen random matrix generator
+     * @param nnzInBlocks number of non-zeros in blocks
+     * @param bigrand Well1024a pseudo-random number generator
+     * @param bSeed seed for random generator
+     * @throws DMLRuntimeException if DMLRuntimeException occurs
+     */
+	public static void generateRandomMatrix( MatrixBlock out, RandomMatrixGenerator rgen, LongStream nnzInBlocks, 
 							Well1024a bigrand, long bSeed ) 
 		throws DMLRuntimeException
 	{
-		boolean invokedFromCP = true;
-		if(bigrand == null && nnzInBlocks!=null)
-			invokedFromCP = false;
-		
-		/*
-		 * Setup min and max for distributions other than "uniform". Min and Max
-		 * are set up in such a way that the usual logic of
-		 * (max-min)*prng.nextDouble() is still valid. This is done primarily to
-		 * share the same code across different distributions.
-		 */
-		double min=0, max=1;
-		if ( rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ) {
-			min=rgen._min;
-			max=rgen._max;
-		}
-		
+		boolean invokedFromCP = (bigrand!=null || nnzInBlocks==null);
 		int rows = rgen._rows;
 		int cols = rgen._cols;
 		int rpb = rgen._rowsPerBlock;
@@ -302,48 +196,52 @@ public class LibMatrixDatagen
 		// sanity check valid dimensions and sparsity
 		checkMatrixDimensionsAndSparsity(rows, cols, sparsity);
 		
-		// Determine the sparsity of output matrix
-		// if invoked from CP: estimated NNZ is for entire matrix (nnz=0, if 0 initialized)
-		// if invoked from MR: estimated NNZ is for one block
-		final long estnnz = (invokedFromCP ? ((min==0.0 && max==0.0)? 0 : (long)(sparsity * rows * cols)) 
-				                           : nnzInBlocks[0]);
-		boolean lsparse = MatrixBlock.evalSparseFormatInMemory( rows, cols, estnnz );
-		out.reset(rows, cols, lsparse);
+		/*
+		 * Setup min and max for distributions other than "uniform". Min and Max
+		 * are set up in such a way that the usual logic of
+		 * (max-min)*prng.nextDouble() is still valid. This is done primarily to
+		 * share the same code across different distributions.
+		 */
+		double min = rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ? rgen._min : 0;
+		double max = rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ? rgen._max : 1;
 		
 		// Special case shortcuts for efficiency
 		if ( rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM)) {
-			//specific cases for efficiency
 			if ( min == 0.0 && max == 0.0 ) { //all zeros
-				// nothing to do here
-				out.nonZeros = 0;
+				out.reset(rows, cols, true);
 				return;
 			} 
-			else if( !out.sparse && sparsity==1.0d && (min == max  //equal values, dense
-					|| (Double.isNaN(min) && Double.isNaN(max))) ) //min == max == NaN
-			{
-				out.init(min, out.rlen, out.clen); 
+			else if( sparsity==1.0d && (min == max  //equal values, dense
+					|| (Double.isNaN(min) && Double.isNaN(max))) ) { //min == max == NaN
+				out.reset(rows, cols, min); 
 				return;
 			}
 		}
 		
+		// collect nnz stream for multiple consumptions
+		long[] lnnzInBlocks = nnzInBlocks.toArray();
+		
+		// Determine the sparsity of output matrix
+		// if invoked from CP: estimated NNZ is for entire matrix (nnz=0, if 0 initialized)
+		// if invoked from MR: estimated NNZ is for one block
+		final long estnnz = (invokedFromCP ? ((min==0.0 && max==0.0)? 0 : 
+				(long)(sparsity * rows * cols)) : lnnzInBlocks[0]);
+		boolean lsparse = MatrixBlock.evalSparseFormatInMemory( rows, cols, estnnz );
+		out.reset(rows, cols, lsparse);
+		
 		// Allocate memory
-		if ( out.sparse ) {
-			//note: individual sparse rows are allocated on demand,
-			//for consistency with memory estimates and prevent OOMs.
+		//note: individual sparse rows are allocated on demand,
+		//for consistency with memory estimates and prevent OOMs.
+		if( out.sparse )
 			out.allocateSparseRowsBlock();
-		}
-		else{
+		else
 			out.allocateDenseBlock();	
-		}
-
+		
 		int nrb = (int) Math.ceil((double)rows/rpb);
 		int ncb = (int) Math.ceil((double)cols/cpb);
-	
-		long[] seeds = null;
-		if ( invokedFromCP ) 
-			seeds = generateSeedsForCP(bigrand, nrb, ncb);
+		long[] seeds = invokedFromCP ? generateSeedsForCP(bigrand, nrb, ncb) : null;
 		
-		genRandomNumbers(invokedFromCP, 0, nrb, out, rgen, nnzInBlocks, bSeed, seeds);
+		genRandomNumbers(invokedFromCP, 0, nrb, 0, ncb, out, rgen, lnnzInBlocks, bSeed, seeds);
 		
 		out.recomputeNonZeros();
 	}
@@ -362,19 +260,16 @@ public class LibMatrixDatagen
 	 * distribution N(0,1). The range of generated values will always be
 	 * (-Inf,+Inf).
 	 * 
-	 * @param rows
-	 * @param cols
-	 * @param rowsInBlock
-	 * @param colsInBlock
-	 * @param sparsity
-	 * @param min
-	 * @param max
-	 * @param bigrand
-	 * @param bSeed
-	 * @return
-	 * @throws DMLRuntimeException
+	 * 
+     * @param out output matrix block
+     * @param rgen random matrix generator
+     * @param nnzInBlocks number of non-zeros in blocks
+     * @param bigrand Well1024a pseudo-random number generator
+     * @param bSeed seed for random generator
+     * @param k ?
+     * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
-	public static void generateRandomMatrix( MatrixBlock out, RandomMatrixGenerator rgen, long[] nnzInBlocks, 
+	public static void generateRandomMatrix( MatrixBlock out, RandomMatrixGenerator rgen, LongStream nnzInBlocks, 
 			Well1024a bigrand, long bSeed, int k ) 
 		throws DMLRuntimeException	
 	{	
@@ -384,16 +279,7 @@ public class LibMatrixDatagen
 		int cpb = rgen._colsPerBlock;
 		double sparsity = rgen._sparsity;
 		
-		if (rows == 1) {
-			generateRandomMatrix(out, rgen, nnzInBlocks, bigrand, bSeed);
-			return;
-		}
-
-		boolean invokedFromCP = true;
-		if(bigrand == null && nnzInBlocks!=null)
-			invokedFromCP = false;
-
-		// sanity check valid dimensions and sparsity
+		//sanity check valid dimensions and sparsity
 		checkMatrixDimensionsAndSparsity(rows, cols, sparsity);
 				
 		/*
@@ -402,65 +288,76 @@ public class LibMatrixDatagen
 		 * (max-min)*prng.nextDouble() is still valid. This is done primarily to
 		 * share the same code across different distributions.
 		 */
-		double min=0, max=1;
-		if ( rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ) {
-			min=rgen._min;
-			max=rgen._max;
-		}
+		double min = rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ? rgen._min : 0;
+		double max = rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ? rgen._max : 1;
 		
-		// Determine the sparsity of output matrix
-		// if invoked from CP: estimated NNZ is for entire matrix (nnz=0, if 0 initialized)
-		// if invoked from MR: estimated NNZ is for one block
-		final long estnnz = (invokedFromCP ? ((min==0.0 && max==0.0)? 0 : (long)(sparsity * rows * cols)) 
-				                           : nnzInBlocks[0]);
+		//determine the sparsity of output matrix (multi-threaded always invoked from CP):
+		//estimated NNZ is for entire matrix (nnz=0, if 0 initialized)
+		final long estnnz = ((min==0.0 && max==0.0) ? 0 : (long)(sparsity * rows * cols));
 		boolean lsparse = MatrixBlock.evalSparseFormatInMemory( rows, cols, estnnz );
-		out.reset(rows, cols, lsparse);
 		
-		// Special case shortcuts for efficiency
+		//fallback to sequential if single rowblock or too few cells or if MatrixBlock is not thread safe
+		if( k<=1 || (rows <= rpb && lsparse) || (long)rows*cols < PAR_NUMCELL_THRESHOLD 
+			|| !MatrixBlock.isThreadSafe(lsparse) ) {
+			generateRandomMatrix(out, rgen, nnzInBlocks, bigrand, bSeed);
+			return;
+		}
+
+		//special case shortcuts for efficiency
 		if ( rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM)) {
-			//specific cases for efficiency
 			if ( min == 0.0 && max == 0.0 ) { //all zeros
-				// nothing to do here
-				out.nonZeros = 0;
+				out.reset(rows, cols, false);
 				return;
 			} 
-			else if( !out.sparse && sparsity==1.0d && min == max ) //equal values
-			{
-				out.init(min, out.rlen, out.clen); 
+			else if( sparsity==1.0d && min == max ) { //equal values
+				out.reset(rows, cols, min); 
 				return;
 			}
 		}
 		
-		// Allocate memory
-		if ( out.sparse ) {
-			//note: individual sparse rows are allocated on demand,
-			//for consistency with memory estimates and prevent OOMs.
+		//allocate memory
+		//note: individual sparse rows are allocated on demand,
+		//for consistency with memory estimates and prevent OOMs.
+		out.reset(rows, cols, lsparse);
+		if( out.sparse )
 			out.allocateSparseRowsBlock();
-		}
-		else{
+		else
 			out.allocateDenseBlock();	
-		}
-		
+	
 		int nrb = (int) Math.ceil((double)rows/rpb);
 		int ncb = (int) Math.ceil((double)cols/cpb);
+		
+		//default: parallelization over row blocks, fallback to parallelization
+		//over column blocks if possible and necessary (higher degree of par)
+		boolean parcol = (!out.sparse && nrb<k && ncb>nrb);
+		int parnb = parcol ? ncb : nrb;
+		
+		//generate seeds independent of parallelizations
+		long[] seeds = generateSeedsForCP(bigrand, nrb, ncb);
+		
+		// collect nnz stream for multiple consumptions
+		long[] lnnzInBlocks = nnzInBlocks.toArray();
 		
 		try 
 		{
 			ExecutorService pool = Executors.newFixedThreadPool(k);
 			ArrayList<RandTask> tasks = new ArrayList<RandTask>();
-			int blklen = ((int)(Math.ceil((double)nrb/k)));
-			for( int i=0; i<k & i*blklen<nrb; i++ ) {
-				long[] seeds = generateSeedsForCP(bigrand, blklen, ncb);
-				tasks.add(new RandTask(invokedFromCP, i*blklen, Math.min((i+1)*blklen, nrb), 
-						               out, rgen, nnzInBlocks, bSeed, seeds) );	
+			int blklen = ((int)(Math.ceil((double)parnb/k)));
+			for( int i=0; i<k & i*blklen<parnb; i++ ) {
+				int rl = parcol ? 0 : i*blklen; 
+				int ru = parcol ? nrb : Math.min((i+1)*blklen, parnb);
+				int cl = parcol ? i*blklen : 0; 
+				int cu = parcol ? Math.min((i+1)*blklen, parnb) : ncb;
+				long[] lseeds = sliceSeedsForCP(seeds, rl, ru, cl, cu, nrb, ncb);
+				tasks.add(new RandTask(rl, ru, cl, cu, out, 
+						rgen, lnnzInBlocks, bSeed, lseeds) );	
 			}
-			pool.invokeAll(tasks);
+			List<Future<Object>> ret = pool.invokeAll(tasks);
 			pool.shutdown();
 			
-			//early error notify in case not all tasks successful
-			for(RandTask rt : tasks) 
-				if( !rt.getReturnCode() ) 
-					throw new DMLRuntimeException("RandGen task failed: " + rt.getErrMsg());
+			//exception propagation in case not all tasks successful
+			for(Future<Object> rc : ret) 
+				rc.get();
 		} 
 		catch (Exception e) {
 			throw new DMLRuntimeException(e);
@@ -481,37 +378,34 @@ public class LibMatrixDatagen
 	 * For example, seq(0,1,0.5) generates (0.0 0.5 1.0) 
 	 *      whereas seq(0,1,0.6) generates (0.0 0.6) but not (0.0 0.6 1.0)
 	 * 
-	 * @param from
-	 * @param to
-	 * @param incr
-	 * @return
-	 * @throws DMLRuntimeException
+	 * @param out output matrix block
+	 * @param from lower end point
+	 * @param to upper end point
+	 * @param incr increment value
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public static void generateSequence(MatrixBlock out, double from, double to, double incr) 
 		throws DMLRuntimeException 
 	{
-		boolean neg = (from > to);
-		if (neg != (incr < 0))
-			throw new DMLRuntimeException("Wrong sign for the increment in a call to seq(): from="+from+", to="+to+ ", incr="+incr);
+		//check valid increment value
+		if( (from > to && incr > 0) || incr == 0 )
+			throw new DMLRuntimeException("Wrong sequence increment: from="+from+", to="+to+ ", incr="+incr);
 		
+		//prepare output matrix
 		int rows = 1 + (int)Math.floor((to-from)/incr);
-		int cols = 1;
-		out.sparse = false; // sequence matrix is always dense
-		out.reset(rows, cols, out.sparse);
-		
+		int cols = 1; // sequence vector always dense
+		out.reset(rows, cols, false);
 		out.allocateDenseBlock();
-		
-		//System.out.println(System.nanoTime() + ": MatrixBlockDSM.seq(): seq("+from+","+to+","+incr+") rows = " + rows);
-		double[] c = out.denseBlock; 
-		
-		c[0] = from;
-		for(int i=1; i < rows; i++) {
-			from += incr;
-			c[i] = from;
+	
+		//compute sequence data
+		double[] c = out.denseBlock; 		
+		double cur = from;
+		for(int i=0; i < rows; i++) {
+			c[i] = cur;
+			cur += incr;
 		}
 		
 		out.recomputeNonZeros();
-		//System.out.println(System.nanoTime() + ": end of seq()");
 	}
 
 	
@@ -519,11 +413,14 @@ public class LibMatrixDatagen
 	/**
      * Generates a sample of size <code>size</code> from a range of values [1,range].
      * <code>replace</code> defines if sampling is done with or without replacement.
-     * 
-     * @param ec
-     * @return
-     * @throws DMLRuntimeException
-     */
+	 * 
+	 * @param out output matrix block
+	 * @param range range upper bound
+	 * @param size sample size
+	 * @param replace if true, sample with replacement
+	 * @param seed seed for random generator
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 */
 	public static void generateSample(MatrixBlock out, long range, int size, boolean replace, long seed)
 		throws DMLRuntimeException 
 	{
@@ -571,38 +468,27 @@ public class LibMatrixDatagen
 		out.examSparsity();
 	}
 
-	/**
-	 * 
-	 * @param bigrand
-	 * @param nrb
-	 * @param ncb
-	 * @return
-	 */
 	private static long[] generateSeedsForCP(Well1024a bigrand, int nrb, int ncb)
 	{
 		int numBlocks = nrb * ncb;
 		long[] seeds = new long[numBlocks];
-		for (int l = 0; l < numBlocks; l++ ) {
-			// case of CP: generate a block-level seed from matrix-level Well1024a seed
+		for( int l = 0; l < numBlocks; l++ )
 			seeds[l] = bigrand.nextLong();
-		}
 		
 		return seeds;
 	}
-	
-	/**
-	 * 
-	 * @param invokedFromCP
-	 * @param rl
-	 * @param ru
-	 * @param out
-	 * @param rgen
-	 * @param nnzInBlocks
-	 * @param bSeed
-	 * @param seeds
-	 * @throws DMLRuntimeException
-	 */
-	private static void genRandomNumbers(boolean invokedFromCP, int rl, int ru, MatrixBlock out, RandomMatrixGenerator rgen, long[] nnzInBlocks, long bSeed, long[] seeds) 
+
+	private static long[] sliceSeedsForCP(long[] seeds, int rl, int ru, int cl, int cu, int nrb, int ncb)
+	{
+		int numBlocks = (ru-rl) * (cu-cl);
+		long[] lseeds = new long[numBlocks];
+		for( int i = rl; i < ru; i++ )
+			System.arraycopy(seeds, i*ncb+cl, lseeds, (i-rl)*(cu-cl), cu-cl);
+		
+		return lseeds;
+	}
+
+	private static void genRandomNumbers(boolean invokedFromCP, int rl, int ru, int cl, int cu, MatrixBlock out, RandomMatrixGenerator rgen, long[] nnzInBlocks, long bSeed, long[] seeds) 
 		throws DMLRuntimeException 
 	{
 		int rows = rgen._rows;
@@ -611,21 +497,15 @@ public class LibMatrixDatagen
 		int cpb = rgen._colsPerBlock;
 		double sparsity = rgen._sparsity;
 		PRNGenerator valuePRNG = rgen._valuePRNG;
-		double min=0, max=1;
-		if ( rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ) {
-			min=rgen._min;
-			max=rgen._max;
-		}
-		
+		double min = rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ? rgen._min : 0;
+		double max = rgen._pdf.equalsIgnoreCase(RAND_PDF_UNIFORM) ? rgen._max : 1;
 		double range = max - min;
-
-		final int clen = out.clen;
-		final int estimatedNNzsPerRow = out.estimatedNNzsPerRow;
+		int clen = out.clen;
+		int estimatedNNzsPerRow = out.estimatedNNzsPerRow;
 		
 		int nrb = (int) Math.ceil((double)rows/rpb);
 		int ncb = (int) Math.ceil((double)cols/cpb);
-		int blockrows, blockcols, rowoffset, coloffset;
-		int blockID = rl*ncb;
+		int blockID = rl*ncb; //used for sparse
 		int counter = 0;
 
 		// Setup Pseudo Random Number Generator for cell values based on 'pdf'.
@@ -641,27 +521,17 @@ public class LibMatrixDatagen
 		}
 		
 		// loop through row-block indices
-		for(int rbi=rl; rbi < ru; rbi++) {
-			blockrows = (rbi == nrb-1 ? (rows-rbi*rpb) : rpb);
-			rowoffset = rbi*rpb;
+		for(int rbi = rl; rbi < ru; rbi++) {
+			int blockrows = (rbi == nrb-1 ? (rows-rbi*rpb) : rpb);
+			int rowoffset = rbi*rpb;
 
 			// loop through column-block indices
-			for(int cbj=0; cbj < ncb; cbj++, blockID++) {
-				blockcols = (cbj == ncb-1 ? (cols-cbj*cpb) : cpb);
-				coloffset = cbj*cpb;
-				// Generate a block (rbi,cbj) 
+			for(int cbj = cl; cbj < cu; cbj++, blockID++) {
+				int blockcols = (cbj == ncb-1 ? (cols-cbj*cpb) : cpb);
+				int coloffset = cbj*cpb;
 				
-				// select the appropriate block-level seed
-				long seed = -1;
-				if ( !invokedFromCP ) {
-					// case of MR: simply use the passed-in value
-					seed = bSeed;
-				}
-				else {
-					// case of CP: generate a block-level seed from matrix-level Well1024a seed
-					seed = seeds[counter++]; //bigrand.nextLong();
-				}
-				// Initialize the PRNGenerator for cell values
+				// select the appropriate block-level seed and init PRNG
+				long seed = !invokedFromCP ?  bSeed : seeds[counter++]; 
 				valuePRNG.setSeed(seed);
 				
 				// Initialize the PRNGenerator for determining cells that contain a non-zero value
@@ -702,11 +572,10 @@ public class LibMatrixDatagen
 				else {
 					if (sparsity == 1.0) {
 						double[] c = out.denseBlock;
-						for(int ii=0; ii < blockrows; ii++) {
-							for(int jj=0, index = ((ii+rowoffset)*cols)+coloffset; jj < blockcols; jj++, index++) {
-								c[index] = min + (range * valuePRNG.nextDouble());
-							}
-						}
+						int cix = rowoffset*cols + coloffset;
+						for(int ii = 0; ii < blockrows; ii++, cix+=cols)
+							for(int jj = 0; jj < blockcols; jj++)
+								c[cix+jj] = min + (range * valuePRNG.nextDouble());
 					}
 					else {
 						if (out.sparse ) {
@@ -731,27 +600,18 @@ public class LibMatrixDatagen
 						}
 						else {
 							double[] c = out.denseBlock;
-							for(int ii=0; ii < blockrows; ii++) {
-								for(int jj=0, index = ((ii+rowoffset)*cols)+coloffset; jj < blockcols; jj++, index++) {
-									if(nnzPRNG.nextDouble() <= sparsity) {
-										c[index] =  min + (range * valuePRNG.nextDouble());
-									}
-								}
-							}
+							int cix = rowoffset*cols + coloffset;
+							for(int ii = 0; ii < blockrows; ii++, cix+=cols)
+								for(int jj = 0; jj < blockcols; jj++)
+									if(nnzPRNG.nextDouble() <= sparsity)
+										c[cix+jj] =  min + (range * valuePRNG.nextDouble());
 						}
 					}
 				} // sparse or dense 
 			} // cbj
 		} // rbi	
 	}
-	
-	/**
-	 * 
-	 * @param rows
-	 * @param cols
-	 * @param sp
-	 * @throws DMLRuntimeException
-	 */
+
 	private static void checkMatrixDimensionsAndSparsity(int rows, int cols, double sp) 
 		throws DMLRuntimeException
 	{
@@ -774,52 +634,38 @@ public class LibMatrixDatagen
         } while (bits - val + (n-1) < 0L);
         return val;
     }
-    
 
-	/**
-	 * 
-	 * 
-	 */
 	private static class RandTask implements Callable<Object> 
 	{
-		private boolean _rc = true;
-		private String _errMsg = null;
-		private boolean _invokedFromCP = true;
-		private int _rl = 0;
-		private int _ru = 0;
+		private int _rl = -1;
+		private int _ru = -1;
+		private int _cl = -1;
+		private int _cu = -1;
 		private MatrixBlock _out = null;
 		private RandomMatrixGenerator _rgen = new RandomMatrixGenerator();
 		private long[] _nnzInBlocks = null;
 		private long _bSeed = 0;
 		private long[] _seeds = null;
 		
-		public RandTask(boolean invokedFromCP, int rl, int ru, MatrixBlock out, RandomMatrixGenerator rgen, long[] nnzInBlocks, long bSeed, long[] seeds) throws DMLRuntimeException 
+		public RandTask(int rl, int ru, int cl, int cu, MatrixBlock out, RandomMatrixGenerator rgen, long[] nnzInBlocks, long bSeed, long[] seeds) 
+			throws DMLRuntimeException 
 		{
-			_invokedFromCP = invokedFromCP;
 			_rl = rl;
 			_ru = ru;
+			_cl = cl;
+			_cu = cu;
 			_out = out;
 			_rgen.init(rgen._pdf, rgen._rows, rgen._cols, rgen._rowsPerBlock, rgen._colsPerBlock, rgen._sparsity, rgen._min, rgen._max, rgen._mean);
 			_nnzInBlocks = nnzInBlocks;
 			_bSeed = bSeed;
 			_seeds = seeds;
 		}
-		
-		public boolean getReturnCode() {
-			return _rc;
-		}
-		
-		public String getErrMsg() {
-			return _errMsg;
-		}
 
 		@Override		
 		public Object call() throws Exception
 		{
-			genRandomNumbers(_invokedFromCP, _rl, _ru, _out, _rgen, _nnzInBlocks, _bSeed, _seeds);
+			genRandomNumbers(true, _rl, _ru, _cl, _cu, _out, _rgen, _nnzInBlocks, _bSeed, _seeds);
 			return null;
 		}
-
 	}
-
 }

@@ -20,7 +20,6 @@
 package org.apache.sysml.runtime.transform;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Iterator;
 
 import org.apache.hadoop.fs.FileSystem;
@@ -28,73 +27,45 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.OutputCollector;
-import org.apache.wink.json4j.JSONArray;
 import org.apache.wink.json4j.JSONException;
 import org.apache.wink.json4j.JSONObject;
-
+import org.apache.sysml.runtime.matrix.data.FrameBlock;
+import org.apache.sysml.runtime.matrix.data.MatrixBlock;
+import org.apache.sysml.runtime.transform.encode.Encoder;
+import org.apache.sysml.runtime.transform.meta.TfMetaUtils;
 import org.apache.sysml.runtime.util.UtilFunctions;
 
-public class OmitAgent extends TransformationAgent {
-	
+public class OmitAgent extends Encoder 
+{	
 	private static final long serialVersionUID = 1978852120416654195L;
 
-	private int[] _omitList = null;
+	private int _rmRows = 0;
 
-	OmitAgent() { }
-	
-	OmitAgent(int[] list) {
-		_omitList = list;
+	public OmitAgent(JSONObject parsedSpec, String[] colnames, int clen) 
+		throws JSONException 
+	{
+		super(null, clen);
+		if (!parsedSpec.containsKey(TfUtils.TXMETHOD_OMIT))
+			return;
+		int[] collist = TfMetaUtils.parseJsonIDList(parsedSpec, colnames, TfUtils.TXMETHOD_OMIT);
+		initColList(collist);
 	}
 	
-	public OmitAgent(JSONObject parsedSpec) throws JSONException {
-		if (!parsedSpec.containsKey(TX_METHOD.OMIT.toString()))
-			return;
-		JSONObject obj = (JSONObject) parsedSpec.get(TX_METHOD.OMIT.toString());
-		JSONArray attrs = (JSONArray) obj.get(JSON_ATTRS);
-		
-		_omitList = new int[attrs.size()];
-		for(int i=0; i < _omitList.length; i++) 
-			_omitList[i] = UtilFunctions.toInt(attrs.get(i));
+	public int getNumRemovedRows() {
+		return _rmRows;
 	}
 	
 	public boolean omit(String[] words, TfUtils agents) 
 	{
-		if(_omitList == null)
+		if( !isApplicable() )
 			return false;
 		
-		for(int i=0; i<_omitList.length; i++) 
-		{
-			int colID = _omitList[i];
-			if(agents.isNA(UtilFunctions.unquote(words[colID-1].trim())))
+		for(int i=0; i<_colList.length; i++) {
+			int colID = _colList[i];
+			if(TfUtils.isNA(agents.getNAStrings(),UtilFunctions.unquote(words[colID-1].trim())))
 				return true;
 		}
 		return false;
-	}
-	
-	public boolean isApplicable() 
-	{
-		return (_omitList != null);
-	}
-	
-	/**
-	 * Check if the given column ID is subjected to this transformation.
-	 * 
-	 */
-	public int isOmitted(int colID)
-	{
-		if(_omitList == null)
-			return -1;
-		
-		int idx = Arrays.binarySearch(_omitList, colID);
-		return ( idx >= 0 ? idx : -1);
-	}
-
-	@Override
-	public void print() {
-		System.out.print("Omit List: \n    ");
-		for(int i : _omitList) 
-			System.out.print(i + " ");
-		System.out.println();
 	}
 
 	@Override
@@ -115,10 +86,63 @@ public class OmitAgent extends TransformationAgent {
 	}
 
 	@Override
-	public String[] apply(String[] words, TfUtils agents) {
+	public MatrixBlock encode(FrameBlock in, MatrixBlock out) {
+		return apply(in, out);
+	}
+	
+	@Override
+	public void build(FrameBlock in) {	
+		//do nothing
+	}
+	
+	@Override
+	public String[] apply(String[] words) {
 		return null;
 	}
+	
+	@Override
+	public MatrixBlock apply(FrameBlock in, MatrixBlock out) 
+	{
+		//determine output size
+		int numRows = 0;
+		for(int i=0; i<out.getNumRows(); i++) {
+			boolean valid = true;
+			for(int j=0; j<_colList.length; j++)
+				valid &= !Double.isNaN(out.quickGetValue(i, _colList[j]-1));
+			numRows += valid ? 1 : 0;
+		}
+		
+		//copy over valid rows into the output
+		MatrixBlock ret = new MatrixBlock(numRows, out.getNumColumns(), false);
+		int pos = 0;
+		for(int i=0; i<in.getNumRows(); i++) {
+			//determine if valid row or omit
+			boolean valid = true;
+			for(int j=0; j<_colList.length; j++)
+				valid &= !Double.isNaN(out.quickGetValue(i, _colList[j]-1));
+			//copy row if necessary
+			if( valid ) {
+				for(int j=0; j<out.getNumColumns(); j++)
+					ret.quickSetValue(pos, j, out.quickGetValue(i, j));
+				pos++;
+			}
+		}
+	
+		//keep info an remove rows
+		_rmRows = out.getNumRows() - pos;
+		
+		return ret; 
+	}
 
-
+	@Override
+	public FrameBlock getMetaData(FrameBlock out) {
+		//do nothing
+		return out;
+	}
+	
+	@Override
+	public void initMetaData(FrameBlock meta) {
+		//do nothing
+	}
 }
  

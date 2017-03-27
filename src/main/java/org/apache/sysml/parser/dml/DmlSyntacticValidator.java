@@ -24,6 +24,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.antlr.v4.runtime.ParserRuleContext;
@@ -39,13 +40,14 @@ import org.apache.sysml.parser.DataIdentifier;
 import org.apache.sysml.parser.Expression;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
+import org.apache.sysml.parser.ExpressionList;
 import org.apache.sysml.parser.ExternalFunctionStatement;
 import org.apache.sysml.parser.ForStatement;
 import org.apache.sysml.parser.FunctionCallIdentifier;
 import org.apache.sysml.parser.FunctionStatement;
 import org.apache.sysml.parser.IfStatement;
 import org.apache.sysml.parser.ImportStatement;
-import org.apache.sysml.parser.IntIdentifier;
+import org.apache.sysml.parser.IndexedIdentifier;
 import org.apache.sysml.parser.IterablePredicate;
 import org.apache.sysml.parser.LanguageException;
 import org.apache.sysml.parser.ParForStatement;
@@ -93,6 +95,7 @@ import org.apache.sysml.parser.dml.DmlParser.MatrixMulExpressionContext;
 import org.apache.sysml.parser.dml.DmlParser.Ml_typeContext;
 import org.apache.sysml.parser.dml.DmlParser.ModIntDivExpressionContext;
 import org.apache.sysml.parser.dml.DmlParser.MultDivExpressionContext;
+import org.apache.sysml.parser.dml.DmlParser.MultiIdExpressionContext;
 import org.apache.sysml.parser.dml.DmlParser.ParForStatementContext;
 import org.apache.sysml.parser.dml.DmlParser.ParameterizedExpressionContext;
 import org.apache.sysml.parser.dml.DmlParser.PathStatementContext;
@@ -111,10 +114,10 @@ import org.apache.sysml.parser.dml.DmlParser.WhileStatementContext;
 
 public class DmlSyntacticValidator extends CommonSyntacticValidator implements DmlListener {
 
-	public DmlSyntacticValidator(CustomErrorListener errorListener, HashMap<String,String> argVals) {
-		super(errorListener, argVals);
+	public DmlSyntacticValidator(CustomErrorListener errorListener, Map<String,String> argVals, String sourceNamespace, Set<String> prepFunctions) {
+		super(errorListener, argVals, sourceNamespace, prepFunctions);
 	}
-
+	
 	@Override public String namespaceResolutionOp() { return "::"; }
 	@Override public String trueStringLiteral() { return "TRUE"; }
 	@Override public String falseStringLiteral() { return "FALSE"; }
@@ -264,18 +267,73 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 		setFileLineColumn(ctx.dataInfo.expr, ctx);
 	}
 
+	/**
+	 * DML uses 1-based indexing.;
+	 *
+	 * @param ctx the parse tree
+	 */
 	@Override
 	public void exitIndexedExpression(IndexedExpressionContext ctx) {
 		boolean isRowLower = (ctx.rowLower != null && !ctx.rowLower.isEmpty() && (ctx.rowLower.info.expr != null));
 		boolean isRowUpper = (ctx.rowUpper != null && !ctx.rowUpper.isEmpty() && (ctx.rowUpper.info.expr != null));
 		boolean isColLower = (ctx.colLower != null && !ctx.colLower.isEmpty() && (ctx.colLower.info.expr != null));
 		boolean isColUpper = (ctx.colUpper != null && !ctx.colUpper.isEmpty() && (ctx.colUpper.info.expr != null));
-		String name = ctx.name.getText();
-		exitIndexedExpressionHelper(ctx, name, ctx.dataInfo,
-				isRowLower ? ctx.rowLower.info : null,
-				isRowUpper ? ctx.rowUpper.info : null,
-				isColLower ? ctx.colLower.info : null,
-				isColUpper ? ctx.colUpper.info : null);
+		ExpressionInfo rowLower = isRowLower ? ctx.rowLower.info : null;
+		ExpressionInfo rowUpper = isRowUpper ? ctx.rowUpper.info : null;
+		ExpressionInfo colLower = isColLower ? ctx.colLower.info : null;
+		ExpressionInfo colUpper = isColUpper ? ctx.colUpper.info : null;
+
+		ctx.dataInfo.expr = new IndexedIdentifier(ctx.name.getText(), false, false);
+		setFileLineColumn(ctx.dataInfo.expr, ctx);
+
+		try {
+			ArrayList< ArrayList<Expression> > exprList = new ArrayList< ArrayList<Expression> >();
+
+			ArrayList<Expression> rowIndices = new ArrayList<Expression>();
+			ArrayList<Expression> colIndices = new ArrayList<Expression>();
+
+
+			if(!isRowLower && !isRowUpper) {
+				// both not set
+				rowIndices.add(null); rowIndices.add(null);
+			}
+			else if(isRowLower && isRowUpper) {
+				// both set
+				rowIndices.add(rowLower.expr);
+				rowIndices.add(rowUpper.expr);
+			}
+			else if(isRowLower && !isRowUpper) {
+				// only row set
+				rowIndices.add(rowLower.expr);
+			}
+			else {
+				notifyErrorListeners("incorrect index expression for row", ctx.start);
+				return;
+			}
+
+			if(!isColLower && !isColUpper) {
+				// both not set
+				colIndices.add(null); colIndices.add(null);
+			}
+			else if(isColLower && isColUpper) {
+				colIndices.add(colLower.expr);
+				colIndices.add(colUpper.expr);
+			}
+			else if(isColLower && !isColUpper) {
+				colIndices.add(colLower.expr);
+			}
+			else {
+				notifyErrorListeners("incorrect index expression for column", ctx.start);
+				return;
+			}
+			exprList.add(rowIndices);
+			exprList.add(colIndices);
+			((IndexedIdentifier) ctx.dataInfo.expr).setIndices(exprList);
+		}
+		catch(Exception e) {
+			notifyErrorListeners("cannot set the indices", ctx.start);
+			return;
+		}
 	}
 
 
@@ -304,7 +362,9 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 						+ "through commandline or initialized to default value.";
 				if( ConfigurationManager.getCompilerConfigFlag(ConfigType.IGNORE_UNSPECIFIED_ARGS) ) {
 					ctx.dataInfo.expr = getConstIdFromString(" ", ctx.start);
-					raiseWarning(msg, ctx.start);
+					if (!ConfigurationManager.getCompilerConfigFlag(ConfigType.MLCONTEXT)) {
+						raiseWarning(msg, ctx.start);
+					}
 				}
 				else {
 					notifyErrorListeners(msg, ctx.start);
@@ -332,24 +392,46 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 			filePath = filePath.substring(1, filePath.length()-1);
 		}
 
-		//concatenate working directory to filepath
-		filePath = _workingDir + File.separator + filePath;
+		File file = new File(filePath);
+		if (!file.isAbsolute()) {
+			//concatenate working directory to filepath
+			filePath = _workingDir + File.separator + filePath;
+		}
+
+		validateNamespace(namespace, filePath, ctx);
+		String scriptID = DMLProgram.constructFunctionKey(namespace, filePath);
 
 		DMLProgram prog = null;
-		try {
-			prog = (new DMLParserWrapper()).doParse(filePath, null, argVals);
-		} catch (ParseException e) {
-			notifyErrorListeners("Exception found during importing a program from file " + filePath, ctx.start);
-			return;
+		if (!_scripts.get().containsKey(scriptID))
+		{
+			_scripts.get().put(scriptID, namespace);
+			try {
+				prog = (new DMLParserWrapper()).doParse(filePath, null, getQualifiedNamespace(namespace), argVals);
+			} catch (ParseException e) {
+				notifyErrorListeners(e.getMessage(), ctx.start);
+				return;
+			}
+	        // Custom logic whether to proceed ahead or not. Better than the current exception handling mechanism
+			if(prog == null) {
+				notifyErrorListeners("One or more errors found during importing a program from file " + filePath, ctx.start);
+				return;
+			}
+			else {
+				ctx.info.namespaces = new HashMap<String, DMLProgram>();
+				ctx.info.namespaces.put(getQualifiedNamespace(namespace), prog);
+				ctx.info.stmt = new ImportStatement();
+				((ImportStatement) ctx.info.stmt).setCompletePath(filePath);
+				((ImportStatement) ctx.info.stmt).setFilePath(ctx.filePath.getText());
+				((ImportStatement) ctx.info.stmt).setNamespace(namespace);
+			}
 		}
-        // Custom logic whether to proceed ahead or not. Better than the current exception handling mechanism
-		if(prog == null) {
-			notifyErrorListeners("One or more errors found during importing a program from file " + filePath, ctx.start);
-			return;
-		}
-		else {
+		else
+		{
+			// Skip redundant parsing (to prevent potential infinite recursion) and
+			// create empty program for this context to allow processing to continue.
+			prog = new DMLProgram();
 			ctx.info.namespaces = new HashMap<String, DMLProgram>();
-			ctx.info.namespaces.put(namespace, prog);
+			ctx.info.namespaces.put(getQualifiedNamespace(namespace), prog);
 			ctx.info.stmt = new ImportStatement();
 			((ImportStatement) ctx.info.stmt).setCompletePath(filePath);
 			((ImportStatement) ctx.info.stmt).setFilePath(ctx.filePath.getText());
@@ -407,13 +489,20 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 		String namespace = fnNames[0];
 		String functionName = fnNames[1];
 		ArrayList<ParameterExpression> paramExpression = getParameterExpressionList(ctx.paramExprs);
-
+		
+		castAsScalarDeprecationCheck(functionName, ctx);
+		
 		boolean hasLHS = ctx.targetList != null;
 		functionCallAssignmentStatementHelper(ctx, printStatements, outputStatements, hasLHS ? ctx.targetList.dataInfo.expr : null, ctx.info, ctx.name,
 	 			hasLHS ? ctx.targetList.start : null, namespace, functionName, paramExpression, hasLHS);
 	}
 
-
+	// TODO: remove this when castAsScalar has been removed from DML/PYDML
+	private void castAsScalarDeprecationCheck(String functionName, ParserRuleContext ctx) {
+		if ("castAsScalar".equalsIgnoreCase(functionName)) {
+			raiseWarning("castAsScalar() has been deprecated. Please use as.scalar().", ctx.start);
+		}
+	}
 
 	@Override
 	public void exitBuiltinFunctionExpression(BuiltinFunctionExpressionContext ctx) {
@@ -427,6 +516,8 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 		String functionName = names[1];
 
 		ArrayList<ParameterExpression> paramExpression = getParameterExpressionList(ctx.paramExprs);
+
+		castAsScalarDeprecationCheck(functionName, ctx);
 
 		ConvertedDMLSyntax convertedSyntax = convertToDMLSyntax(ctx, namespace, functionName, paramExpression, ctx.name);
 		if(convertedSyntax == null) {
@@ -474,7 +565,6 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 		functCall.setFunctionName(functionName);
 		functCall.setFunctionNamespace(namespace);
 
-
 		final ArrayList<DataIdentifier> targetList = new ArrayList<DataIdentifier>();
 		for(DataIdentifierContext dataCtx : ctx.targetList) {
 			if(dataCtx.dataInfo.expr instanceof DataIdentifier) {
@@ -495,6 +585,10 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 			if (validBIF)
 				return;
 		}
+
+		// Override default namespace for imported non-built-in function
+		String inferNamespace = (sourceNamespace != null && sourceNamespace.length() > 0 && DMLProgram.DEFAULT_NAMESPACE.equals(namespace)) ? sourceNamespace : namespace;
+		functCall.setFunctionNamespace(inferNamespace);
 
 		setMultiAssignmentStatement(targetList, functCall, ctx, ctx.info);
 	}
@@ -564,7 +658,7 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 
 		DataIdentifier iterVar = new DataIdentifier(ctx.iterVar.getText());
 		HashMap<String, String> parForParamValues = null;
-		Expression incrementExpr = new IntIdentifier(1, currentFile, line, col, line, col);
+		Expression incrementExpr = null; //1/-1
 		if(ctx.iterPred.info.increment != null) {
 			incrementExpr = ctx.iterPred.info.increment;
 		}
@@ -591,12 +685,14 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 		HashMap<String, String> parForParamValues = new HashMap<String, String>();
 		if(ctx.parForParams != null && ctx.parForParams.size() > 0) {
 			for(StrictParameterizedExpressionContext parForParamCtx : ctx.parForParams) {
-				parForParamValues.put(parForParamCtx.paramName.getText(), parForParamCtx.paramVal.getText());
+				String paramVal = parForParamCtx.paramVal.getText();
+				if( argVals.containsKey(paramVal) )
+					paramVal = argVals.get(paramVal);
+				parForParamValues.put(parForParamCtx.paramName.getText(), paramVal);
 			}
 		}
 
-		Expression incrementExpr = new IntIdentifier(1, currentFile, line, col, line, col);
-
+		Expression incrementExpr = null; //1/-1
 		if( ctx.iterPred.info.increment != null ) {
 			incrementExpr = ctx.iterPred.info.increment;
 		}
@@ -627,18 +723,15 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 				dataType = paramCtx.paramType.dataType().getText();
 			}
 
-			if(dataType.equals("matrix") || dataType.equals("Matrix")) {
-				// matrix
+			
+			//check and assign data type
+			checkValidDataType(dataType, paramCtx.start);
+			if( dataType.equalsIgnoreCase("matrix") )
 				dataId.setDataType(DataType.MATRIX);
-			}
-			else if(dataType.equals("scalar") || dataType.equals("Scalar")) {
-				// scalar
+			else if( dataType.equalsIgnoreCase("frame") )
+				dataId.setDataType(DataType.FRAME);
+			else if( dataType.equalsIgnoreCase("scalar") )
 				dataId.setDataType(DataType.SCALAR);
-			}
-			else {
-				notifyErrorListeners("invalid datatype " + dataType, paramCtx.start);
-				return null;
-			}
 
 			valueType = paramCtx.paramType.valueType().getText();
 			if(valueType.equals("int") || valueType.equals("integer")
@@ -682,7 +775,8 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 		}
 		ctx.info.from = ctx.from.info.expr;
 		ctx.info.to = ctx.to.info.expr;
-		ctx.info.increment = ctx.increment.info.expr;
+		if(ctx.increment != null && ctx.increment.info != null)
+			ctx.info.increment = ctx.increment.info.expr;
 	}
 
 
@@ -703,7 +797,6 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 
 		// set function name
 		functionStmt.setName(ctx.name.getText());
-
 
 		if(ctx.body.size() > 0) {
 			// handle function body
@@ -839,13 +932,7 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 
 	@Override
 	public void exitMatrixDataTypeCheck(MatrixDataTypeCheckContext ctx) {
-		boolean validMatrixType = ctx.ID().getText().equals("matrix")
-								|| ctx.ID().getText().equals("Matrix")
-								|| ctx.ID().getText().equals("Scalar")
-								|| ctx.ID().getText().equals("scalar");
-		if(!validMatrixType	) {
-			notifyErrorListeners("incorrect datatype (expected matrix or scalar)", ctx.start);
-		}
+		checkValidDataType(ctx.ID().getText(), ctx.start);
 	}
 
 
@@ -960,5 +1047,17 @@ public class DmlSyntacticValidator extends CommonSyntacticValidator implements D
 	@Override public void enterSimpleDataIdentifierExpression(SimpleDataIdentifierExpressionContext ctx) {}
 
 	@Override public void enterBooleanOrExpression(BooleanOrExpressionContext ctx) {}
+
+	@Override
+	public void enterMultiIdExpression(MultiIdExpressionContext ctx) { }
+
+	@Override
+	public void exitMultiIdExpression(MultiIdExpressionContext ctx) {
+		ArrayList<Expression> values = new ArrayList<Expression>();
+		for(ExpressionContext elem : ctx.targetList) {
+			values.add(elem.info.expr);
+		}
+		ctx.info.expr = new ExpressionList(values);
+	}
 
 }

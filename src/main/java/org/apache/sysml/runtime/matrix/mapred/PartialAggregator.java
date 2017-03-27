@@ -28,7 +28,6 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.Reporter;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
 import org.apache.sysml.runtime.matrix.operators.AggregateBinaryOperator;
@@ -50,24 +49,7 @@ public class PartialAggregator extends MMCJMRCache
 	//local file management
 	private boolean memOnly = false; 
 	private boolean rowMajor = true;
-	
-	
-	/**
-	 * 
-	 * @param conf
-	 * @param memSize
-	 * @param resultRlen
-	 * @param resultClen
-	 * @param blockRlen
-	 * @param blockClen
-	 * @param filePrefix
-	 * @param inRowMajor
-	 * @param op
-	 * @param vCls
-	 * @throws InstantiationException
-	 * @throws IllegalAccessException
-	 * @throws IOException
-	 */
+
 	public PartialAggregator(JobConf conf, long memSize, long resultRlen, long resultClen, 
 			int blockRlen, int blockClen, boolean inRowMajor, 
 			AggregateBinaryOperator op, Class<? extends MatrixValue> vCls) 
@@ -100,18 +82,9 @@ public class PartialAggregator extends MMCJMRCache
 			super.deleteAllWorkingFiles();
 		}
 	}
-	
-	/**
-	 * 
-	 * @param indexes
-	 * @param value
-	 * @param leftcached
-	 * @throws IOException
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
+
 	public void aggregateToBuffer(MatrixIndexes indexes, MatrixValue value, boolean leftcached) 
-		throws IOException, DMLUnsupportedOperationException, DMLRuntimeException
+		throws IOException, DMLRuntimeException
 	{
 		if( !memOnly )
 		{
@@ -129,15 +102,7 @@ public class PartialAggregator extends MMCJMRCache
 		
 		aggregateToBufferHelp(indexes, value, leftcached);
 	}
-	
-	/**
-	 * 
-	 * @param outputs
-	 * @param j
-	 * @param reporter
-	 * @return
-	 * @throws IOException
-	 */
+
 	public long outputToHadoop(CollectMultipleConvertedOutputs outputs, int j, Reporter reporter) 
 		throws IOException
 	{
@@ -166,28 +131,9 @@ public class PartialAggregator extends MMCJMRCache
 		
 		return nonZeros;
 	}
-	
-	/**
-	 * 
-	 * @throws IOException
-	 */
-	public void close() 
-		throws IOException
-	{
-		if( !memOnly )
-			super.deleteAllWorkingFiles();
-	}
-	
-	/**
-	 * 
-	 * @param indexes
-	 * @param value
-	 * @param leftcached
-	 * @throws DMLUnsupportedOperationException
-	 * @throws DMLRuntimeException
-	 */
+
 	private void aggregateToBufferHelp(MatrixIndexes indexes, MatrixValue value, boolean leftcached) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		Integer ix = _bufferMap.get( indexes );
 		if( ix != null ) //agg into existing block 
@@ -199,12 +145,7 @@ public class PartialAggregator extends MMCJMRCache
 			addToBuffer(indexes, value);
 		}
 	}
-	
-	/**
-	 * 
-	 * @param indexes
-	 * @param value
-	 */
+
 	private void addToBuffer(MatrixIndexes indexes, MatrixValue value) 
 	{
 		if(_bufferSize>=_buffer.length)
@@ -216,13 +157,7 @@ public class PartialAggregator extends MMCJMRCache
 		_bufferMap.put(_buffer[_bufferSize].getKey(), _bufferSize);
 		_bufferSize++;		
 	}
-	
 
-	/**
-	 * 
-	 * @param indexes
-	 * @return
-	 */
 	private int getFileCursor(MatrixIndexes indexes) 
 	{
 		if(rowMajor)
@@ -230,17 +165,7 @@ public class PartialAggregator extends MMCJMRCache
 		else
 			return (int)(((indexes.getColumnIndex()-1)*numBlocksInColumn+indexes.getRowIndex()-1)/_bufferCapacity);
 	}
-	
 
-	/**
-	 * 
-	 * @param path
-	 * @param outputs
-	 * @param j
-	 * @param reporter
-	 * @return
-	 * @throws IOException
-	 */
 	private long copyFileContentAndDelete(Path path, CollectMultipleConvertedOutputs outputs, int j, Reporter reporter) 
 		throws IOException 
 	{

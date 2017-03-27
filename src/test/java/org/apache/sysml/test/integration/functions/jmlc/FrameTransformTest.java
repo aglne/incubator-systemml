@@ -32,6 +32,7 @@ import org.apache.sysml.api.jmlc.PreparedScript;
 import org.apache.sysml.api.jmlc.ResultVariables;
 import org.apache.sysml.lops.Lop;
 import org.apache.sysml.runtime.controlprogram.parfor.stat.Timing;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.test.integration.AutomatedTestBase;
 import org.apache.sysml.test.integration.TestConfiguration;
 import org.apache.sysml.test.utils.TestUtils;
@@ -97,6 +98,7 @@ public class FrameTransformTest extends AutomatedTestBase
 	
 		//generate inputs
 		double[][] Xd = TestUtils.round(getRandomMatrix(rows, cols, 0.51, 7.49, sparse?sparsity2:sparsity1, 1234));
+		setColumnValue(Xd, 2, 3); //create ragged meta frame
 		String[][] Xs = createFrameData(Xd);
 		String[][] Ms = createRecodeMaps(Xs);
 		
@@ -159,10 +161,8 @@ public class FrameTransformTest extends AutomatedTestBase
 			ex.printStackTrace();
 			throw new IOException(ex);
 		}
-		finally
-		{
-			if( conn != null )
-				conn.close();
+		finally {
+			IOUtilFunctions.closeSilently(conn);
 		}
 		
 		System.out.println("JMLC scoring w/ "+nRuns+" runs in "+time.stop()+"ms.");
@@ -170,17 +170,21 @@ public class FrameTransformTest extends AutomatedTestBase
 		return ret;
 	}
 	
+	protected static String[][] createFrameData(double[][] data) {
+		return createFrameData(data, "V");
+	}
+	
 	/**
 	 * 
 	 * @param data
 	 * @return
 	 */
-	protected static String[][] createFrameData(double[][] data) {
+	protected static String[][] createFrameData(double[][] data, String prefix) {
 		String[][] ret = new String[data.length][];
 		for( int i=0; i<data.length; i++ ) {
 			String[] row = new String[data[i].length]; 
 			for( int j=0; j<data[i].length; j++ )
-				row[j] = "V"+String.valueOf(data[i][j]);
+				row[j] = prefix+String.valueOf(data[i][j]);
 			ret[i] = row;
 		}
 		
@@ -217,4 +221,9 @@ public class FrameTransformTest extends AutomatedTestBase
 		
 		return ret;
 	}
+	
+	protected void setColumnValue(double[][] data, int col, double val) {
+		for( int i=0; i<data.length; i++ )
+			data[i][col] = val;
+	} 
 }

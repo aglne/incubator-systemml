@@ -22,41 +22,39 @@ package org.apache.sysml.runtime.instructions.spark.data;
 import java.lang.ref.SoftReference;
 
 import org.apache.spark.broadcast.Broadcast;
+import org.apache.sysml.runtime.controlprogram.caching.CacheBlock;
 
-public class BroadcastObject extends LineageObject
+public class BroadcastObject<T extends CacheBlock> extends LineageObject
 {
 	//soft reference storage for graceful cleanup in case of memory pressure
-	private SoftReference<PartitionedBroadcastMatrix> _bcHandle = null;
+	protected final SoftReference<PartitionedBroadcast<T>> _bcHandle;
+	private final long _size;
 	
-	public BroadcastObject( PartitionedBroadcastMatrix bvar, String varName )
-	{
-		_bcHandle = new SoftReference<PartitionedBroadcastMatrix>(bvar);
-		_varName = varName;
+	public BroadcastObject( PartitionedBroadcast<T> bvar, String varName, long size ) {
+		super(varName);
+		_bcHandle = new SoftReference<PartitionedBroadcast<T>>(bvar);
+		_size = size;
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
-	public PartitionedBroadcastMatrix getBroadcast()
-	{
+
+	@SuppressWarnings("rawtypes")
+	public PartitionedBroadcast getBroadcast() {
 		return _bcHandle.get();
 	}
 	
-	/**
-	 * 
-	 * @return
-	 */
+	public long getSize() {
+		return _size;
+	}
+
 	public boolean isValid() 
 	{
 		//check for evicted soft reference
-		PartitionedBroadcastMatrix pbm = _bcHandle.get();
+		PartitionedBroadcast<T> pbm = _bcHandle.get();
 		if( pbm == null )
 			return false;
 		
 		//check for validity of individual broadcasts
-		Broadcast<PartitionedMatrixBlock>[] tmp = pbm.getBroadcasts();
-		for( Broadcast<PartitionedMatrixBlock> bc : tmp )
+		Broadcast<PartitionedBlock<T>>[] tmp = pbm.getBroadcasts();
+		for( Broadcast<PartitionedBlock<T>> bc : tmp )
 			if( !bc.isValid() )
 				return false;		
 		return true;

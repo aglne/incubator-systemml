@@ -26,7 +26,6 @@ import java.util.Map.Entry;
 import org.apache.sysml.parser.DMLProgram;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.DMLScriptException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 
 
@@ -44,12 +43,6 @@ public class Program
 		_programBlocks = new ArrayList<ProgramBlock>();
 	}
 
-	/**
-	 * 
-	 * @param namespace
-	 * @param fname
-	 * @param fpb
-	 */
 	public synchronized void addFunctionProgramBlock(String namespace, String fname, FunctionProgramBlock fpb)
 	{	
 		if (namespace == null) 
@@ -64,12 +57,7 @@ public class Program
 		
 		namespaceBlocks.put(fname,fpb);
 	}
-	
-	/**
-	 * 
-	 * @param namespace
-	 * @param fname
-	 */
+
 	public synchronized void removeFunctionProgramBlock(String namespace, String fname) 
 	{	
 		if (namespace == null) 
@@ -82,11 +70,7 @@ public class Program
 				namespaceBlocks.remove(fname);
 		}
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	public synchronized HashMap<String,FunctionProgramBlock> getFunctionProgramBlocks(){
 		
 		HashMap<String,FunctionProgramBlock> retVal = new HashMap<String,FunctionProgramBlock>();
@@ -104,14 +88,7 @@ public class Program
 		
 		return retVal;
 	}
-	
-	/**
-	 * 
-	 * @param namespace
-	 * @param fname
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public synchronized FunctionProgramBlock getFunctionProgramBlock(String namespace, String fname) throws DMLRuntimeException{
 		
 		if (namespace == null) namespace = DMLProgram.DEFAULT_NAMESPACE;
@@ -135,7 +112,7 @@ public class Program
 	}
 
 	public void execute(ExecutionContext ec)
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		ec.initDebugProgramCounters();
 		
@@ -154,13 +131,5 @@ public class Program
 		}
 		
 		ec.clearDebugProgramCounters();
-	}
-		
-	
-	public void printMe() {
-		
-		for (ProgramBlock pb : this._programBlocks) {
-			pb.printMe();
-		}
 	}
 }

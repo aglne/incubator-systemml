@@ -45,13 +45,19 @@ import org.apache.sysml.api.MLContext;
 import org.apache.sysml.conf.DMLConfig;
 import org.apache.sysml.hops.OptimizerUtils;
 import org.apache.sysml.parser.DataExpression;
+import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContextFactory;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
+import org.apache.sysml.runtime.io.FrameReader;
+import org.apache.sysml.runtime.io.FrameReaderFactory;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
+import org.apache.sysml.runtime.matrix.data.InputInfo;
 import org.apache.sysml.runtime.matrix.data.MatrixValue.CellIndex;
+import org.apache.sysml.runtime.matrix.data.CSVFileFormatProperties;
+import org.apache.sysml.runtime.matrix.data.FrameBlock;
 import org.apache.sysml.runtime.matrix.data.OutputInfo;
 import org.apache.sysml.runtime.util.MapReduceTool;
 import org.apache.sysml.test.utils.TestUtils;
@@ -72,6 +78,7 @@ import org.apache.sysml.utils.Statistics;
  * </ul>
  * 
  */
+@SuppressWarnings("deprecation")
 public abstract class AutomatedTestBase 
 {
 	
@@ -85,6 +92,10 @@ public abstract class AutomatedTestBase
 	
 	public static final boolean EXCEPTION_EXPECTED = true;
 	public static final boolean EXCEPTION_NOT_EXPECTED = false;
+	
+	// By default: TEST_GPU is set to false to allow developers without Nvidia GPU to run integration test suite 
+	public static final boolean TEST_GPU = false;
+	public static final double GPU_TOLERANCE = 1e-9;
 	
 	protected ScriptType scriptType;
 	
@@ -105,8 +116,18 @@ public abstract class AutomatedTestBase
 
 			System.setProperty("hadoop.home.dir", cwd + File.separator
 					+ "\\src\\test\\config\\hadoop_bin_windows");
-			System.setProperty("java.library.path", cwd + File.separator
+			
+			if(TEST_GPU) {
+				String CUDA_LIBRARY_PATH = System.getenv("CUDA_PATH") + File.separator + "bin"; 
+				System.setProperty("java.library.path", cwd + File.separator
+						+ "\\src\\test\\config\\hadoop_bin_windows\\bin" + File.pathSeparator
+						+ "/lib" + File.pathSeparator
+						+ CUDA_LIBRARY_PATH);
+			}
+			else {
+				System.setProperty("java.library.path", cwd + File.separator
 					+ "\\src\\test\\config\\hadoop_bin_windows\\bin");
+			}
 			
 
 		    // Need to muck around with the classloader to get it to use the new
@@ -146,8 +167,12 @@ public abstract class AutomatedTestBase
 	 */
 	private static final File CONFIG_TEMPLATE_FILE = new File(CONFIG_DIR, "SystemML-config.xml");
 	
-	/** Location under which we create local temporary directories for test cases. */
-	private static final String LOCAL_TEMP_ROOT_DIR = "target/testTemp";
+	/**
+	 * Location under which we create local temporary directories for test cases.
+	 * To adjust where testTemp is located, use -Dsystemml.testTemp.root.dir=<new location>.  This is necessary
+	 * if any parent directories are public-protected.
+	 */
+	private static final String LOCAL_TEMP_ROOT_DIR = System.getProperty("systemml.testTemp.root.dir","target/testTemp");
 	private static final File LOCAL_TEMP_ROOT = new File(LOCAL_TEMP_ROOT_DIR);
 	
 	/** Base directory for generated IN, OUT, EXPECTED test data artifacts instead of SCRIPT_DIR. */
@@ -314,6 +339,16 @@ public abstract class AutomatedTestBase
 	 */
 	protected File getCurConfigFile() {
 		return new File(getCurLocalTempDir(), "SystemML-config.xml");
+	}
+	
+	/**
+	 * <p>
+	 * Tests that use custom SystemML configuration should override to ensure
+	 * scratch space and local temporary directory locations are also updated.
+	 * </p>
+	 */
+	protected File getConfigTemplateFile() {
+		return CONFIG_TEMPLATE_FILE;
 	}
 	
 	protected MLContext getMLContextForTesting() throws DMLRuntimeException {
@@ -694,13 +729,11 @@ public abstract class AutomatedTestBase
 		TestUtils.writeTestScalar(baseDirectory + EXPECTED_DIR + cacheDir + name, value);
 		expectedFiles.add(baseDirectory + EXPECTED_DIR + cacheDir + name);
 	}
-	
-	@SuppressWarnings("deprecation")
+
 	protected static HashMap<CellIndex, Double> readDMLMatrixFromHDFS(String fileName) {
 		return TestUtils.readDMLMatrixFromHDFS(baseDirectory + OUTPUT_DIR + fileName);
 	}
 
-	@SuppressWarnings("deprecation")
 	public HashMap<CellIndex, Double> readRMatrixFromFS(String fileName) {
 		System.out.println("R script out: " + baseDirectory + EXPECTED_DIR + cacheDir + fileName);
 		return TestUtils.readRMatrixFromFS(baseDirectory + EXPECTED_DIR + cacheDir + fileName);
@@ -709,6 +742,44 @@ public abstract class AutomatedTestBase
 	protected static HashMap<CellIndex, Double> readDMLScalarFromHDFS(String fileName) {
 		return TestUtils.readDMLScalarFromHDFS(baseDirectory + OUTPUT_DIR + fileName);
 	}
+	
+	
+	protected static FrameBlock readDMLFrameFromHDFS(String fileName, InputInfo iinfo) 
+			throws DMLRuntimeException, IOException 
+	{
+		//read frame data from hdfs
+		String strFrameFileName = baseDirectory + OUTPUT_DIR + fileName;
+		FrameReader reader = FrameReaderFactory.createFrameReader(iinfo);
+		
+		MatrixCharacteristics md = readDMLMetaDataFile(fileName);
+		return reader.readFrameFromHDFS(strFrameFileName, md.getRows(), md.getCols());
+	}
+
+
+	protected static FrameBlock readDMLFrameFromHDFS(String fileName, InputInfo iinfo, MatrixCharacteristics md) 
+			throws DMLRuntimeException, IOException 
+	{
+		//read frame data from hdfs
+		String strFrameFileName = baseDirectory + OUTPUT_DIR + fileName;
+		FrameReader reader = FrameReaderFactory.createFrameReader(iinfo);
+		
+		return reader.readFrameFromHDFS(strFrameFileName, md.getRows(), md.getCols());
+	}
+
+	protected static FrameBlock readRFrameFromHDFS(String fileName, InputInfo iinfo, MatrixCharacteristics md) 
+			throws DMLRuntimeException, IOException 
+	{
+		//read frame data from hdfs
+		String strFrameFileName = baseDirectory + EXPECTED_DIR + fileName;
+
+		CSVFileFormatProperties fprop = new CSVFileFormatProperties();
+		fprop.setHeader(true);
+		FrameReader reader = FrameReaderFactory.createFrameReader(iinfo, fprop);
+		
+		return reader.readFrameFromHDFS(strFrameFileName, md.getRows(), md.getCols());
+	}
+
+
 
 	public HashMap<CellIndex, Double> readRScalarFromFS(String fileName) {
 		System.out.println("R script out: " + baseDirectory + EXPECTED_DIR + cacheDir + fileName);
@@ -720,20 +791,27 @@ public abstract class AutomatedTestBase
 	 * @param fileName
 	 * @param mc
 	 */
-	public static void checkDMLMetaDataFile(String fileName, MatrixCharacteristics mc)
+	public static void checkDMLMetaDataFile(String fileName, MatrixCharacteristics mc) {
+		MatrixCharacteristics rmc = readDMLMetaDataFile(fileName);
+		Assert.assertEquals(mc.getRows(), rmc.getRows());
+		Assert.assertEquals(mc.getCols(), rmc.getCols());
+	}
+	
+	/**
+	 * 
+	 * @param fileName
+	 * @return
+	 */
+	public static MatrixCharacteristics readDMLMetaDataFile(String fileName)
 	{
-		try
-		{
+		try {
 			String fname = baseDirectory + OUTPUT_DIR + fileName +".mtd";
 			JSONObject meta = new DataExpression().readMetadataFile(fname, false);
 			long rlen = Long.parseLong(meta.get(DataExpression.READROWPARAM).toString());
 			long clen = Long.parseLong(meta.get(DataExpression.READCOLPARAM).toString());
-			
-			Assert.assertEquals(mc.getRows(), rlen);
-			Assert.assertEquals(mc.getCols(), clen);
+			return new MatrixCharacteristics(rlen, clen, -1, -1);
 		}
-		catch(Exception ex)
-		{
+		catch(Exception ex) {
 			throw new RuntimeException(ex);
 		}
 	}
@@ -821,9 +899,9 @@ public abstract class AutomatedTestBase
 			curLocalTempDir.mkdirs();
 			TestUtils.clearDirectory(curLocalTempDir.getPath());
 
-			// Create a SystemML config file for this test case.
-			// Use the canned file under src/test/config as a template
-			String configTemplate = FileUtils.readFileToString(CONFIG_TEMPLATE_FILE, "UTF-8");
+			// Create a SystemML config file for this test case based on default template
+			// from src/test/config or derive from custom configuration provided by test.
+			String configTemplate = FileUtils.readFileToString(getConfigTemplateFile(), "UTF-8");
 			
 			String localTemp = curLocalTempDir.getPath();
 			String configContents = configTemplate.replace("<scratch>scratch_space</scratch>", 
@@ -833,9 +911,7 @@ public abstract class AutomatedTestBase
 			
 			FileUtils.write(getCurConfigFile(), configContents, "UTF-8");
 			
-			System.out.printf(
-					"This test case will use SystemML config file %s\n",
-					getCurConfigFile());
+			System.out.printf("This test case will use SystemML config file %s\n", getCurConfigFile());
 		} catch (IOException e) {
 			throw new RuntimeException(e);
 		}
@@ -1143,6 +1219,8 @@ public abstract class AutomatedTestBase
 		//use optional config file since default under SystemML/DML
 		args.add("-config="+ getCurConfigFile().getPath());
 		
+		if(TEST_GPU)
+			args.add("-gpu");
 		
 		// program-specific parameters
 		if ( newWay ) {
@@ -1417,8 +1495,6 @@ public abstract class AutomatedTestBase
 		}
 
 		TestUtils.clearAssertionInformation();
-
-		System.gc();
 	}
 
 	/**
@@ -1617,5 +1693,98 @@ public abstract class AutomatedTestBase
 		}
 		
 		return sourceDirectory;
+	}
+	
+	/**
+	 * <p>
+	 * Adds a frame to the input path and writes it to a file.
+	 * </p>
+	 * 
+	 * @param name
+	 *            directory name
+	 * @param matrix
+	 *            two dimensional frame data
+	 * @param bIncludeR
+	 *            generates also the corresponding R frame data
+	 * @throws IOException 
+	 * @throws DMLRuntimeException 
+	 */
+	protected double[][] writeInputFrame(String name, double[][] data, boolean bIncludeR, ValueType[] schema, OutputInfo oi) 
+			throws DMLRuntimeException, IOException 
+	{
+		String completePath = baseDirectory + INPUT_DIR + name;
+		String completeRPath = baseDirectory + INPUT_DIR + name + ".csv";
+		
+		try {
+			cleanupExistingData(baseDirectory + INPUT_DIR + name, bIncludeR);
+		} catch (IOException e) {
+			e.printStackTrace();
+			throw new RuntimeException(e);
+		}
+		
+		TestUtils.writeTestFrame(completePath, data, schema, oi);
+		if (bIncludeR) {
+			TestUtils.writeTestFrame(completeRPath, data, schema, OutputInfo.CSVOutputInfo, true);
+			inputRFiles.add(completeRPath);
+		}
+		if (DEBUG)
+			TestUtils.writeTestFrame(DEBUG_TEMP_DIR + completePath, data, schema, oi);
+		inputDirectories.add(baseDirectory + INPUT_DIR + name);
+
+		return data;
+	}
+
+	protected double[][] writeInputFrameWithMTD(String name, double[][] data, boolean bIncludeR, ValueType[] schema, OutputInfo oi) 
+			throws DMLRuntimeException, IOException 
+	{
+		MatrixCharacteristics mc = new MatrixCharacteristics(data.length, data[0].length, OptimizerUtils.DEFAULT_BLOCKSIZE, data[0].length, -1);
+		return writeInputFrameWithMTD(name, data, bIncludeR, mc, schema, oi);
+	}
+	
+	protected double[][] writeInputFrameWithMTD(String name, double[][] data, boolean bIncludeR, MatrixCharacteristics mc, ValueType[] schema, OutputInfo oi) 
+			throws DMLRuntimeException, IOException 
+	{
+		writeInputFrame(name, data, bIncludeR, schema, oi);
+		
+		// write metadata file
+		try
+		{
+			String completeMTDPath = baseDirectory + INPUT_DIR + name + ".mtd";
+			MapReduceTool.writeMetaDataFile(completeMTDPath, null, schema, DataType.FRAME, mc, oi);
+		}
+		catch(IOException e)
+		{
+			e.printStackTrace();
+			throw new RuntimeException(e);
+		}
+	
+		return data;
+	}
+	
+	/**
+	 * <p>
+	 * Adds a frame to the input path and writes it to a file.
+	 * </p>
+	 * 
+	 * @param name
+	 *            directory name
+	 * @param matrix
+	 *            two dimensional frame data
+	 * @param schema
+	 * @param oi
+	 * @throws IOException 
+	 * @throws DMLRuntimeException 
+	 */
+	protected double[][] writeInputFrame(String name, double[][] data, ValueType[] schema, OutputInfo oi) 
+			throws DMLRuntimeException, IOException 
+	{
+		return writeInputFrame(name, data, false, schema, oi);
+	}
+	
+	protected boolean heavyHittersContainsSubString(String str) {
+		for( String opcode : Statistics.getCPHeavyHitterOpCodes())
+			if(opcode.contains(str))
+				return true;
+		return false;		
 	}
 }

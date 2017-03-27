@@ -22,6 +22,7 @@ package org.apache.sysml.parser;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -53,9 +54,10 @@ public class StatementBlock extends LiveVariableAnalysis
 	HashMap<String,ConstIdentifier> _constVarsIn;
 	HashMap<String,ConstIdentifier> _constVarsOut;
 	
+	private ArrayList<String> _updateInPlaceVars = null;
 	private boolean _requiresRecompile = false;
 	
-	public StatementBlock(){
+	public StatementBlock() {
 		_dmlProg = null;
 		_statements = new ArrayList<Statement>();
 		_read = new VariableSet();
@@ -66,6 +68,7 @@ public class StatementBlock extends LiveVariableAnalysis
 		_initialized = true;
 		_constVarsIn = new HashMap<String,ConstIdentifier>();
 		_constVarsOut = new HashMap<String,ConstIdentifier>();
+		_updateInPlaceVars = new ArrayList<String>();
 	}
 	
 	public void setDMLProg(DMLProgram dmlProg){
@@ -89,24 +92,7 @@ public class StatementBlock extends LiveVariableAnalysis
 		this._endColumn		= s.getEndColumn();
 		
 	}
-	
-	/**
-	 * replace statement 
-	 */
-	public void replaceStatement(int index, Statement passedStmt){
-		this._statements.set(index, passedStmt);
-		
-		if (index == 0){
-			this._beginLine 	= passedStmt.getBeginLine(); 
-			this._beginColumn 	= passedStmt.getBeginColumn();
-		}
-		
-		else if (index == this._statements.size() -1){
-			this._endLine 		= passedStmt.getEndLine();
-			this._endColumn		= passedStmt.getEndColumn();	
-		}
-	}
-	
+
 	public void addStatementBlock(StatementBlock s){
 		for (int i = 0; i < s.getNumStatements(); i++){
 			_statements.add(s.getStatement(i));
@@ -189,7 +175,8 @@ public class StatementBlock extends LiveVariableAnalysis
 			}
 			else
 				sourceExpr = ((MultiAssignmentStatement)stmt).getSource();
-			if ( sourceExpr instanceof BuiltinFunctionExpression && ((BuiltinFunctionExpression)sourceExpr).multipleReturns() )
+			if ( (sourceExpr instanceof BuiltinFunctionExpression && ((BuiltinFunctionExpression)sourceExpr).multipleReturns())
+				|| (sourceExpr instanceof ParameterizedBuiltinFunctionExpression && ((ParameterizedBuiltinFunctionExpression)sourceExpr).multipleReturns()))
 				return false;
 			
 			//function calls (only mergable if inlined dml-bodied function)
@@ -197,7 +184,6 @@ public class StatementBlock extends LiveVariableAnalysis
 				FunctionCallIdentifier fcall = (FunctionCallIdentifier) sourceExpr;
 				FunctionStatementBlock fblock = dmlProg.getFunctionStatementBlock(fcall.getNamespace(), fcall.getName());
 				if (fblock == null){
-					LOG.error(sourceExpr.printErrorLocation() + "function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace());
 					throw new LanguageException(sourceExpr.printErrorLocation() + "function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace());
 				}
 				if( !rIsInlineableFunction(fblock, dmlProg) )
@@ -222,13 +208,20 @@ public class StatementBlock extends LiveVariableAnalysis
 			if (sourceExpr instanceof FunctionCallIdentifier){
 				FunctionCallIdentifier fcall = (FunctionCallIdentifier) sourceExpr;
 				FunctionStatementBlock fblock = dmlProg.getFunctionStatementBlock(fcall.getNamespace(),fcall.getName());
-				if (fblock == null){
-					LOG.error(sourceExpr.printErrorLocation() + "function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace());
+				if (fblock == null) {
 					throw new LanguageException(sourceExpr.printErrorLocation() + "function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace());
 				}
 				
-				if( rIsInlineableFunction(fblock, dmlProg) )
+				//check for unsupported target indexed identifiers (for consistent error handling)
+				if( stmt instanceof AssignmentStatement 
+					&& ((AssignmentStatement)stmt).getTarget() instanceof IndexedIdentifier ) {
+					return false;
+				}
+				
+				//check if function can be inlined
+				if( rIsInlineableFunction(fblock, dmlProg) ) {
 					return true;
+				}
 			}
 		}
 		
@@ -237,12 +230,6 @@ public class StatementBlock extends LiveVariableAnalysis
 	}
    
 
-    /**
-     * 
-     * @param fblock
-     * @param prog
-     * @return
-     */
     private boolean rIsInlineableFunction( FunctionStatementBlock fblock, DMLProgram prog )
     {
     	boolean ret = true;
@@ -356,10 +343,10 @@ public class StatementBlock extends LiveVariableAnalysis
 		}
 		if (_liveOut != null) sb.append("liveout " + _liveOut.toString() + "\n");
 		if (_liveIn!= null) sb.append("livein " + _liveIn.toString()+ "\n");
-		if (_gen != null) sb.append("gen " + _gen.toString()+ "\n");
-		if (_kill != null) sb.append("kill " + _kill.toString()+ "\n");
-		if (_read != null) sb.append("read " + _read.toString()+ "\n");
-		if (_updated != null) sb.append("updated " + _updated.toString()+ "\n");
+		if (_gen != null && !_gen.getVariables().isEmpty()) sb.append("gen " + _gen.toString()+ "\n");
+		if (_kill != null && !_kill.getVariables().isEmpty()) sb.append("kill " + _kill.toString()+ "\n");
+		if (_read != null && !_read.getVariables().isEmpty()) sb.append("read " + _read.toString()+ "\n");
+		if (_updated != null && !_updated.getVariables().isEmpty()) sb.append("updated " + _updated.toString()+ "\n");
 		return sb.toString();
 	}
 
@@ -414,8 +401,7 @@ public class StatementBlock extends LiveVariableAnalysis
 				FunctionCallIdentifier fcall = (FunctionCallIdentifier) sourceExpr;
 				FunctionStatementBlock fblock = dmlProg.getFunctionStatementBlock(fcall.getNamespace(), fcall.getName());
 				if (fblock == null){
-					LOG.error(fcall.printErrorLocation() + "function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace());
-					throw new LanguageException(fcall.printErrorLocation() + "function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace());
+					fcall.raiseValidateError("function " + fcall.getName() + " is undefined in namespace " + fcall.getNamespace(), false);
 				}
 				FunctionStatement fstmt = (FunctionStatement)fblock.getStatement(0);
 				
@@ -429,8 +415,7 @@ public class StatementBlock extends LiveVariableAnalysis
 				String prefix = _seq.getNextID() + "_";
 				
 				if (fstmt.getBody().size() > 1){
-					LOG.error(sourceExpr.printErrorLocation() + "rewritable function can only have 1 statement block");
-					throw new LanguageException(sourceExpr.printErrorLocation() + "rewritable function can only have 1 statement block");
+					sourceExpr.raiseValidateError("rewritable function can only have 1 statement block", false);
 				}
 				StatementBlock sblock = fstmt.getBody().get(0);
 				
@@ -451,8 +436,7 @@ public class StatementBlock extends LiveVariableAnalysis
 					else {
 						// use default value for parameter
 						if (fstmt.getInputParams().get(i).getDefaultValue() == null){
-							LOG.error(currFormalParam.printErrorLocation() + "default parameter for " + currFormalParam + " is undefined");
-							throw new LanguageException(currFormalParam.printErrorLocation() + "default parameter for " + currFormalParam + " is undefined");
+							currFormalParam.raiseValidateError("default parameter for " + currFormalParam + " is undefined", false);
 						}
 						currCallParam = new DataIdentifier(fstmt.getInputParams().get(i).getDefaultValue());
 						currCallParam.setAllPositions( 	fstmt.getInputParams().get(i).getFilename(),
@@ -482,7 +466,23 @@ public class StatementBlock extends LiveVariableAnalysis
 					Statement rewrittenStmt = stmt.rewriteStatement(prefix);
 					newStatements.add(rewrittenStmt);		
 				}
-				
+
+				if (current instanceof AssignmentStatement) {
+					if (fstmt.getOutputParams().size() == 0) {
+						AssignmentStatement as = (AssignmentStatement) current;
+						if ((as.getTargetList().size() == 1) && (as.getTargetList().get(0) != null)) {
+							raiseValidateError("Function '" + fcall.getName()
+									+ "' does not return a value but is assigned to " + as.getTargetList().get(0),
+									true);
+						}
+					}
+				} else if (current instanceof MultiAssignmentStatement) {
+					if (fstmt.getOutputParams().size() == 0) {
+						MultiAssignmentStatement mas = (MultiAssignmentStatement) current;
+						raiseValidateError("Function '" + fcall.getName()
+								+ "' does not return a value but is assigned to " + mas.getTargetList(), true);
+					}
+				}
 				// handle the return values
 				for (int i = 0; i < fstmt.getOutputParams().size(); i++){
 					
@@ -496,10 +496,18 @@ public class StatementBlock extends LiveVariableAnalysis
 					DataIdentifier newTarget = null;
 					if (current instanceof AssignmentStatement){
 						if (i > 0) {
-							LOG.error(current.printErrorLocation() + "Assignment statement cannot return multiple values");
-							throw new LanguageException(current.printErrorLocation() + "Assignment statement cannot return multiple values");
+							fstmt.raiseValidateError("Assignment statement cannot return multiple values", false);
 						}
-						newTarget = new DataIdentifier(((AssignmentStatement)current).getTarget());
+						AssignmentStatement as = (AssignmentStatement) current;
+						DataIdentifier targ = as.getTarget();
+						if (targ == null) {
+							Expression exp = as.getSource();
+							FunctionCallIdentifier fci = (FunctionCallIdentifier) exp;
+							String functionName = fci.getName();
+							fstmt.raiseValidateError(functionName + " requires LHS value", false);
+						} else {
+							newTarget = new DataIdentifier(((AssignmentStatement)current).getTarget());
+						}
 					}
 					else{
 						newTarget = new DataIdentifier(((MultiAssignmentStatement)current).getTargetList().get(i));
@@ -528,17 +536,6 @@ public class StatementBlock extends LiveVariableAnalysis
 		return newStatements;
 	}
 	
-	/**
-	 * 
-	 * @param dmlProg
-	 * @param ids
-	 * @param constVars
-	 * @param conditional
-	 * @return
-	 * @throws LanguageException
-	 * @throws ParseException
-	 * @throws IOException
-	 */
 	public VariableSet validate(DMLProgram dmlProg, VariableSet ids, HashMap<String, ConstIdentifier> constVars, boolean conditional) 
 		throws LanguageException, ParseException, IOException 
 	{
@@ -623,9 +620,11 @@ public class StatementBlock extends LiveVariableAnalysis
 						}
 						IntIdentifier intid = null;
 						if (bife.getOpCode() == Expression.BuiltinFunctionOp.NROW){
-							intid = new IntIdentifier(currVal.getDim1(), bife.getFilename(), bife.getBeginLine(), bife.getBeginColumn(), bife.getEndLine(), bife.getEndColumn());
+							intid = new IntIdentifier((currVal instanceof IndexedIdentifier)?((IndexedIdentifier)currVal).getOrigDim1():currVal.getDim1(), 
+									bife.getFilename(), bife.getBeginLine(), bife.getBeginColumn(), bife.getEndLine(), bife.getEndColumn());
 						} else {
-							intid = new IntIdentifier(currVal.getDim2(), bife.getFilename(), bife.getBeginLine(), bife.getBeginColumn(), bife.getEndLine(), bife.getEndColumn());
+							intid = new IntIdentifier((currVal instanceof IndexedIdentifier)?((IndexedIdentifier)currVal).getOrigDim2():currVal.getDim2(), 
+									bife.getFilename(), bife.getBeginLine(), bife.getBeginColumn(), bife.getEndLine(), bife.getEndColumn());
 						}
 						
 						// handle case when nrow / ncol called on variable with size unknown (dims == -1) 
@@ -714,7 +713,8 @@ public class StatementBlock extends LiveVariableAnalysis
 					FunctionCallIdentifier fci = (FunctionCallIdentifier)source;
 					fci.validateExpression(dmlProg, ids.getVariables(), currConstVars, conditional);
 				}
-				else if ( source instanceof BuiltinFunctionExpression && ((DataIdentifier)source).multipleReturns()) {
+				else if ( (source instanceof BuiltinFunctionExpression || source instanceof ParameterizedBuiltinFunctionExpression) 
+						&& ((DataIdentifier)source).multipleReturns()) {
 					source.validateExpression(mas, ids.getVariables(), currConstVars, conditional);
 				}
 				else 
@@ -744,7 +744,7 @@ public class StatementBlock extends LiveVariableAnalysis
 							ids.addVariable(target.getName(), target);
 					}
 				}
-				else if ( source instanceof BuiltinFunctionExpression ) {
+				else if ( source instanceof BuiltinFunctionExpression || source instanceof ParameterizedBuiltinFunctionExpression ) {
 					Identifier[] outputs = source.getOutputs();
 					for (int j=0; j < targetList.size(); j++) {
 						ids.addVariable(targetList.get(j).getName(), (DataIdentifier)outputs[j]);
@@ -753,18 +753,19 @@ public class StatementBlock extends LiveVariableAnalysis
 			}
 				
 			else if(current instanceof ForStatement || current instanceof IfStatement || current instanceof WhileStatement ){
-				raiseValidateError("control statement (CVStatement, ELStatement, WhileStatement, IfStatement, ForStatement) should not be in genreric statement block.  Likely a parsing error", conditional);
+				raiseValidateError("control statement (WhileStatement, IfStatement, ForStatement) should not be in generic statement block. Likely a parsing error", conditional);
 			}
-				
-			else if (current instanceof PrintStatement){
+
+			else if (current instanceof PrintStatement) {
 				PrintStatement pstmt = (PrintStatement) current;
-				Expression expr = pstmt.getExpression();	
-				expr.validateExpression(ids.getVariables(), currConstVars, conditional);
-				
-				// check that variables referenced in print statement expression are scalars
-				if (expr.getOutput().getDataType() != Expression.DataType.SCALAR){
-				   raiseValidateError("print statement can only print scalars", conditional);
+				List<Expression> expressions = pstmt.getExpressions();
+				for (Expression expression : expressions) {
+					expression.validateExpression(ids.getVariables(), currConstVars, conditional);
+					if (expression.getOutput().getDataType() != Expression.DataType.SCALAR) {
+						raiseValidateError("print statement can only print scalars", conditional);
+					}
 				}
+
 			}
 			
 			// no work to perform for PathStatement or ImportStatement
@@ -871,8 +872,7 @@ public class StatementBlock extends LiveVariableAnalysis
 			VariableSet updated = s.variablesUpdated();
 			
 			if (s instanceof WhileStatement || s instanceof IfStatement || s instanceof ForStatement){
-				LOG.error(s.printErrorLocation() + "control statement (while / for / if) cannot be in generic statement block");
-				throw new LanguageException(s.printErrorLocation() + "control statement (while / for / if) cannot be in generic statement block");
+				raiseValidateError("control statement (while / for / if) cannot be in generic statement block", false);
 			}
 	
 			if (read != null){
@@ -964,25 +964,12 @@ public class StatementBlock extends LiveVariableAnalysis
 	///////////////////////////////////////////////////////////////
 	// validate error handling (consistent for all expressions)
 	
-	/**
-	* 
-	* @param msg
-	* @param conditional
-	* @throws LanguageException
-	*/
 	public void raiseValidateError( String msg, boolean conditional ) 
 		throws LanguageException
 	{
 		raiseValidateError(msg, conditional, null);
 	}
 	
-	/**
-	* 
-	* @param msg
-	* @param conditional
-	* @param code
-	* @throws LanguageException
-	*/
 	public void raiseValidateError( String msg, boolean conditional, String errorCode ) 
 		throws LanguageException
 	{
@@ -996,7 +983,7 @@ public class StatementBlock extends LiveVariableAnalysis
 		{
 			String fullMsg = this.printErrorLocation() + msg;
 			
-			LOG.error( fullMsg );			
+			//LOG.error( fullMsg ); //no redundant error			
 			if( errorCode != null )
 				throw new LanguageException( fullMsg, errorCode );
 			else 
@@ -1045,20 +1032,24 @@ public class StatementBlock extends LiveVariableAnalysis
 	
 
 	/////////
-	// materialized hops recompilation flags
+	// materialized hops recompilation / updateinplace flags
 	////
 	
-	public void updateRecompilationFlag() 
-		throws HopsException
-	{
+	public void updateRecompilationFlag() throws HopsException {
 		_requiresRecompile = ConfigurationManager.isDynamicRecompilation() 
 			                 && Recompiler.requiresRecompilation(get_hops());
 	}
 	
-	public boolean requiresRecompilation()
-	{
+	public boolean requiresRecompilation() {
 		return _requiresRecompile;
 	}
 	
+	public ArrayList<String> getUpdateInPlaceVars() {
+		return _updateInPlaceVars;
+	}
+	
+	public void setUpdateInPlaceVars( ArrayList<String> vars ) {
+		_updateInPlaceVars = vars;
+	}
 	
 }  // end class

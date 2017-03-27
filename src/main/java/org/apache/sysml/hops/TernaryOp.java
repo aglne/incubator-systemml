@@ -19,6 +19,7 @@
 
 package org.apache.sysml.hops;
 
+import org.apache.sysml.api.DMLScript;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.hops.rewrite.HopRewriteUtils;
 import org.apache.sysml.lops.Aggregate;
@@ -30,6 +31,8 @@ import org.apache.sysml.lops.Group;
 import org.apache.sysml.lops.Lop;
 import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.lops.PickByCount;
+import org.apache.sysml.lops.PlusMult;
+import org.apache.sysml.lops.RepMat;
 import org.apache.sysml.lops.SortKeys;
 import org.apache.sysml.lops.Ternary;
 import org.apache.sysml.lops.UnaryCP;
@@ -138,6 +141,11 @@ public class TernaryOp extends Hop
 				case CTABLE:
 					constructLopsCtable();
 					break;
+				
+				case PLUS_MULT:
+				case MINUS_MULT:
+					constructLopsPlusMult();
+					break;
 					
 				default:
 					throw new HopsException(this.printErrorLocation() + "Unknown TernaryOp (" + _op + ") while constructing Lops \n");
@@ -157,8 +165,8 @@ public class TernaryOp extends Hop
 	/**
 	 * Method to construct LOPs when op = CENTRAILMOMENT.
 	 * 
-	 * @throws HopsException
-	 * @throws LopsException
+	 * @throws HopsException if HopsException occurs
+	 * @throws LopsException if LopsException occurs
 	 */
 	private void constructLopsCentralMoment() 
 		throws HopsException, LopsException 
@@ -211,8 +219,8 @@ public class TernaryOp extends Hop
 	/**
 	 * Method to construct LOPs when op = COVARIANCE.
 	 * 
-	 * @throws HopsException
-	 * @throws LopsException
+	 * @throws HopsException if HopsException occurs
+	 * @throws LopsException if LopsException occurs
 	 */
 	private void constructLopsCovariance()
 		throws HopsException, LopsException 
@@ -269,8 +277,8 @@ public class TernaryOp extends Hop
 	/**
 	 * Method to construct LOPs when op = QUANTILE | INTERQUANTILE.
 	 * 
-	 * @throws HopsException
-	 * @throws LopsException
+	 * @throws HopsException if HopsException occurs
+	 * @throws LopsException if LopsException occurs
 	 */
 	private void constructLopsQuantile() throws HopsException, LopsException {
 		
@@ -351,8 +359,8 @@ public class TernaryOp extends Hop
 	/**
 	 * Method to construct LOPs when op = CTABLE.
 	 * 
-	 * @throws HopsException
-	 * @throws LopsException
+	 * @throws HopsException if HopsException occurs
+	 * @throws LopsException if LopsException occurs
 	 */
 	private void constructLopsCtable() throws HopsException, LopsException {
 		
@@ -621,25 +629,62 @@ public class TernaryOp extends Hop
 			}
 		}
 	}
+
+	private void constructLopsPlusMult() 
+		throws HopsException, LopsException 
+	{
+		if ( _op != OpOp3.PLUS_MULT && _op != OpOp3.MINUS_MULT )
+			throw new HopsException("Unexpected operation: " + _op + ", expecting " + OpOp3.PLUS_MULT + " or" +  OpOp3.MINUS_MULT);
+		
+		ExecType et = null;
+		if(DMLScript.USE_ACCELERATOR && (DMLScript.FORCE_ACCELERATOR || getMemEstimate() < OptimizerUtils.GPU_MEMORY_BUDGET) )
+			et = ExecType.GPU;
+		else
+			et = optFindExecType();
+		PlusMult plusmult = null;
+		
+		if( et == ExecType.CP || et == ExecType.SPARK || et == ExecType.GPU ) {
+			plusmult = new PlusMult(
+					getInput().get(0).constructLops(),
+					getInput().get(1).constructLops(),
+					getInput().get(2).constructLops(), 
+					_op, getDataType(),getValueType(), et );	
+		}
+		else { //MR
+			Hop left = getInput().get(0);
+			Hop right = getInput().get(2);
+			boolean requiresRep = BinaryOp.requiresReplication(left, right);
+			
+			Lop rightLop = right.constructLops();
+			if( requiresRep ) {
+				Lop offset = createOffsetLop(left, (right.getDim2()<=1)); //ncol of left input (determines num replicates)
+				rightLop = new RepMat(rightLop, offset, (right.getDim2()<=1), right.getDataType(), right.getValueType());
+				setOutputDimensions(rightLop);
+				setLineNumbers(rightLop);	
+			}
+		
+			Group group1 = new Group(left.constructLops(), Group.OperationTypes.Sort, getDataType(), getValueType());
+			setLineNumbers(group1);
+			setOutputDimensions(group1);
+		
+			Group group2 = new Group(rightLop, Group.OperationTypes.Sort, getDataType(), getValueType());
+			setLineNumbers(group2);
+			setOutputDimensions(group2);
+			
+			plusmult = new PlusMult(group1, getInput().get(1).constructLops(), 
+					group2, _op, getDataType(),getValueType(), et );	
+		}
+		
+		setOutputDimensions(plusmult);
+		setLineNumbers(plusmult);
+		setLops(plusmult);
+	}
 	
 	@Override
 	public String getOpString() {
 		String s = new String("");
 		s += "t(" + HopsOpOp3String.get(_op) + ")";
 		return s;
-	}
-
-	public void printMe() throws HopsException {
-		if (LOG.isDebugEnabled()){
-			if (getVisited() != VisitStatus.DONE) {
-				super.printMe();
-				LOG.debug("  Operation: " + _op);
-				for (Hop h : getInput()) {
-					h.printMe();
-				}
-			}
-			setVisited(VisitStatus.DONE);
-		}
 	}
 
 	@Override
@@ -667,7 +712,10 @@ public class TernaryOp extends Hop
 				// This part of the code is executed only when a vector of quantiles are computed
 				// Output is a vector of length = #of quantiles to be computed, and it is likely to be dense.
 				return OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, 1.0);
-				
+			case PLUS_MULT:
+			case MINUS_MULT:
+				sparsity = OptimizerUtils.getSparsity(dim1, dim2, nnz); 
+				return OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, sparsity);
 			default:
 				throw new RuntimeException("Memory for operation (" + _op + ") can not be estimated.");
 		}
@@ -742,7 +790,12 @@ public class TernaryOp extends Hop
 				if( mc[2].dimsKnown() )
 					return new long[]{mc[2].getRows(), 1, mc[2].getRows()};
 				break;
-			
+			case PLUS_MULT:
+			case MINUS_MULT:
+				//compute back NNz
+				double sp1 = OptimizerUtils.getSparsity(mc[0].getRows(), mc[0].getRows(), mc[0].getNonZeros()); 
+				double sp2 = OptimizerUtils.getSparsity(mc[2].getRows(), mc[2].getRows(), mc[2].getNonZeros());
+				return new long[]{mc[0].getRows(), mc[0].getCols(), (long) Math.min(sp1+sp2,1)};
 			default:
 				throw new RuntimeException("Memory for operation (" + _op + ") can not be estimated.");
 		}
@@ -845,7 +898,12 @@ public class TernaryOp extends Hop
 					// Output is a vector of length = #of quantiles to be computed, and it is likely to be dense.
 					// TODO qx1
 					break;	
-					
+				
+				case PLUS_MULT:
+				case MINUS_MULT:
+					setDim1( getInput().get(0)._dim1 );
+					setDim2( getInput().get(0)._dim2 );
+					break;
 				default:
 					throw new RuntimeException("Size information for operation (" + _op + ") can not be updated.");
 			}
@@ -895,22 +953,13 @@ public class TernaryOp extends Hop
 		
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	private boolean isSequenceRewriteApplicable() 
 	{
 		return    isSequenceRewriteApplicable(true)
 			   || isSequenceRewriteApplicable(false);
 	}
-	
-	/**
-	 * 
-	 * @param left
-	 * @return
-	 */
+
 	private boolean isSequenceRewriteApplicable( boolean left ) 
 	{
 		boolean ret = false;
@@ -963,7 +1012,7 @@ public class TernaryOp extends Hop
 	 * Used for (1) constructing CP lops (hop-lop rewrite), and (2) in order to determine
 	 * if dag split after removeEmpty necessary (#2 is precondition for #1). 
 	 * 
-	 * @return
+	 * @return true if ignore zero rewrite
 	 */
 	public boolean isMatrixIgnoreZeroRewriteApplicable() 
 	{

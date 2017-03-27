@@ -33,7 +33,6 @@ import org.apache.sysml.lops.WeightedUnaryMM;
 import org.apache.sysml.lops.WeightedUnaryMM.WUMMType;
 import org.apache.sysml.lops.WeightedUnaryMMR;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.functionobjects.SwapIndex;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
@@ -48,9 +47,6 @@ import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.matrix.operators.QuaternaryOperator;
 import org.apache.sysml.runtime.matrix.operators.ReorgOperator;
 
-/**
- * 
- */
 public class QuaternaryInstruction extends MRInstruction implements IDistributedCacheConsumer
 {	
 	private byte _input1 = -1;
@@ -60,15 +56,7 @@ public class QuaternaryInstruction extends MRInstruction implements IDistributed
 	
 	private boolean _cacheU = false;
 	private boolean _cacheV = false;
-	
-	/**
-	 * 
-	 * @param type
-	 * @param in1
-	 * @param in2
-	 * @param out
-	 * @param istr
-	 */
+
 	public QuaternaryInstruction(Operator op, byte in1, byte in2, byte in3, byte in4, byte out, boolean cacheU, boolean cacheV, String istr)
 	{
 		super(op, out);
@@ -100,13 +88,6 @@ public class QuaternaryInstruction extends MRInstruction implements IDistributed
 		return _input4;
 	}
 
-	/**
-	 * 
-	 * @param mc1
-	 * @param mc2
-	 * @param mc3
-	 * @param dimOut
-	 */
 	public void computeMatrixCharacteristics(MatrixCharacteristics mc1, MatrixCharacteristics mc2, 
 			MatrixCharacteristics mc3, MatrixCharacteristics dimOut) 
 	{
@@ -129,13 +110,7 @@ public class QuaternaryInstruction extends MRInstruction implements IDistributed
 			dimOut.set(mcTmp.getRows(), mcTmp.getCols(), mc1.getRowsPerBlock(), mc1.getColsPerBlock());	
 		}
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static QuaternaryInstruction parseInstruction( String str ) 
 		throws DMLRuntimeException 
 	{		
@@ -308,7 +283,7 @@ public class QuaternaryInstruction extends MRInstruction implements IDistributed
 	@Override
 	public void processInstruction(Class<? extends MatrixValue> valueClass, CachedValueMap cachedValues, 
 			           IndexedMatrixValue tempValue, IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		QuaternaryOperator qop = (QuaternaryOperator)optr; 
 		

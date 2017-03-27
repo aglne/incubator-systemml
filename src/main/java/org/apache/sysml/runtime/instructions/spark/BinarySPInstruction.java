@@ -24,13 +24,12 @@ import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.sysml.lops.BinaryM.VectorType;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.instructions.cp.CPOperand;
 import org.apache.sysml.runtime.instructions.cp.ScalarObject;
-import org.apache.sysml.runtime.instructions.spark.data.PartitionedBroadcastMatrix;
+import org.apache.sysml.runtime.instructions.spark.data.PartitionedBroadcast;
 import org.apache.sysml.runtime.instructions.spark.functions.MatrixMatrixBinaryOpFunction;
 import org.apache.sysml.runtime.instructions.spark.functions.MatrixScalarUnaryFunction;
 import org.apache.sysml.runtime.instructions.spark.functions.MatrixVectorBinaryOpPartitionFunction;
@@ -50,19 +49,6 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		super(op, in1, in2, out, opcode, istr);
 	}
 
-	public BinarySPInstruction(Operator op, CPOperand in1, CPOperand in2, CPOperand in3, CPOperand out, String opcode, String istr ){
-		super(op, in1, in2, in3, out, opcode, istr);
-	}
-	
-	/**
-	 * 
-	 * @param instr
-	 * @param in1
-	 * @param in2
-	 * @param out
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
 	protected static String parseBinaryInstruction(String instr, CPOperand in1, CPOperand in2, CPOperand out)
 		throws DMLRuntimeException
 	{	
@@ -95,12 +81,11 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 	/**
 	 * Common binary matrix-matrix process instruction
 	 * 
-	 * @param ec
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
+	 * @param ec execution context
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	protected void processMatrixMatrixBinaryInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		
@@ -137,16 +122,9 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		sec.addLineageRDD(output.getName(), rddVar1);
 		sec.addLineageRDD(output.getName(), rddVar2);
 	}
-	
-	/**
-	 * 
-	 * @param ec
-	 * @param type 
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
+
 	protected void processMatrixBVectorBinaryInstruction(ExecutionContext ec, VectorType vtype) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		
@@ -157,7 +135,7 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		String rddVar = input1.getName(); 
 		String bcastVar = input2.getName();
 		JavaPairRDD<MatrixIndexes,MatrixBlock> in1 = sec.getBinaryBlockRDDHandleForVariable( rddVar );
-		PartitionedBroadcastMatrix in2 = sec.getBroadcastForVariable( bcastVar );
+		PartitionedBroadcast<MatrixBlock> in2 = sec.getBroadcastForVariable( bcastVar );
 		MatrixCharacteristics mc1 = sec.getMatrixCharacteristics(rddVar);
 		MatrixCharacteristics mc2 = sec.getMatrixCharacteristics(bcastVar);
 		
@@ -184,15 +162,9 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		sec.addLineageRDD(output.getName(), rddVar);
 		sec.addLineageBroadcast(output.getName(), bcastVar);
 	}
-	
-	/**
-	 * 
-	 * @param ec
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
+
 	protected void processMatrixScalarBinaryInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 	
@@ -214,13 +186,7 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		sec.setRDDHandleForVariable(output.getName(), out);
 		sec.addLineageRDD(output.getName(), rddVar);
 	}
-	
-	
-	/**
-	 * 
-	 * @param sec
-	 * @throws DMLRuntimeException
-	 */
+
 	protected void updateBinaryMMOutputMatrixCharacteristics(SparkExecutionContext sec, boolean checkCommonDim) 
 		throws DMLRuntimeException
 	{
@@ -239,12 +205,7 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 			}
 		}	
 	}
-	
-	/**
-	 * 
-	 * @param sec
-	 * @throws DMLRuntimeException
-	 */
+
 	protected void updateBinaryAppendOutputMatrixCharacteristics(SparkExecutionContext sec, boolean cbind) 
 		throws DMLRuntimeException
 	{
@@ -269,13 +230,6 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		}
 	}
 
-	/**
-	 * 
-	 * @param mc1
-	 * @param mc2
-	 * @param left
-	 * @return
-	 */
 	protected long getNumReplicas(MatrixCharacteristics mc1, MatrixCharacteristics mc2, boolean left) 
 	{
 		if( left ) 
@@ -293,12 +247,7 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 		
 		return 1; //matrix-matrix
 	}
-	
-	/**
-	 * 
-	 * @param sec
-	 * @throws DMLRuntimeException
-	 */
+
 	protected void checkMatrixMatrixBinaryCharacteristics(SparkExecutionContext sec) 
 		throws DMLRuntimeException 
 	{
@@ -326,13 +275,7 @@ public abstract class BinarySPInstruction extends ComputationSPInstruction
 					+ "[" + mc1.getRowsPerBlock() + "x" + mc1.getColsPerBlock()  + " vs " + mc2.getRowsPerBlock() + "x" + mc2.getColsPerBlock() + "]");
 		}	
 	}
-	
-	/**
-	 * 
-	 * @param sec
-	 * @param cbind
-	 * @throws DMLRuntimeException
-	 */
+
 	protected void checkBinaryAppendInputCharacteristics(SparkExecutionContext sec, boolean cbind, boolean checkSingleBlk, boolean checkAligned) 
 		throws DMLRuntimeException
 	{

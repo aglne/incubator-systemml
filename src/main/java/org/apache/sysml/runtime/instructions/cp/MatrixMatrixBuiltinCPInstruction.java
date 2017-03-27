@@ -20,7 +20,6 @@
 package org.apache.sysml.runtime.instructions.cp;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.matrix.data.LibCommonsMath;
@@ -43,12 +42,12 @@ public class MatrixMatrixBuiltinCPInstruction extends BuiltinBinaryCPInstruction
 	
 	@Override
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		String opcode = getOpcode();
         
         if ( LibCommonsMath.isSupportedMatrixMatrixOperation(opcode) ) {
-        	MatrixBlock solution = LibCommonsMath.matrixMatrixOperations((MatrixObject)ec.getVariable(input1.getName()), (MatrixObject)ec.getVariable(input2.getName()), opcode);
+        	MatrixBlock solution = LibCommonsMath.matrixMatrixOperations(ec.getMatrixObject(input1.getName()), (MatrixObject)ec.getVariable(input2.getName()), opcode);
     		ec.setMatrixOutput(output.getName(), solution);
         	return;
         }

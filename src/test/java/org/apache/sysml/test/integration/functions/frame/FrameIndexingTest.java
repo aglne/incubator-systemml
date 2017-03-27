@@ -19,11 +19,8 @@
 
 package org.apache.sysml.test.integration.functions.frame;
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-
 import org.apache.sysml.parser.Expression.ValueType;
+import org.apache.sysml.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.util.DataConverter;
@@ -90,13 +87,12 @@ public class FrameIndexingTest extends AutomatedTestBase
 			double[][] A = getRandomMatrix(rows, schema.length, -10, 10, 0.9, 2412); 
 			
 			//init data frame 1
-			List<ValueType> lschema1 = Arrays.asList(schema);
-			FrameBlock frame1 = new FrameBlock(lschema1);
-			Object[] row1 = new Object[lschema1.size()];
+			FrameBlock frame1 = new FrameBlock(schema);
+			Object[] row1 = new Object[schema.length];
 			for( int i=0; i<rows; i++ ) {
-				for( int j=0; j<lschema1.size(); j++ )
-					A[i][j] = UtilFunctions.objectToDouble(lschema1.get(j), 
-							row1[j] = UtilFunctions.doubleToObject(lschema1.get(j), A[i][j]));
+				for( int j=0; j<schema.length; j++ )
+					A[i][j] = UtilFunctions.objectToDouble(schema[j], 
+							row1[j] = UtilFunctions.doubleToObject(schema[j], A[i][j]));
 				frame1.appendRow(row1);
 			}
 			
@@ -118,22 +114,22 @@ public class FrameIndexingTest extends AutomatedTestBase
 				double[][] B = getRandomMatrix(ru-rl+1, cu-cl+1, -10, 10, 0.9, 7); 
 				
 				//init data frame 2
-				List<ValueType> lschema2 = new ArrayList<ValueType>();
+				ValueType[] lschema2 = new ValueType[cu-cl+1];
 				for( int j=cl; j<=cu; j++ )
-					lschema2.add(schema[j]);
+					lschema2[j-cl] = schema[j];
 				FrameBlock frame2 = new FrameBlock(lschema2);
-				Object[] row2 = new Object[lschema2.size()];
+				Object[] row2 = new Object[lschema2.length];
 				for( int i=0; i<ru-rl+1; i++ ) {
-					for( int j=0; j<lschema2.size(); j++ )
-						B[i][j] = UtilFunctions.objectToDouble(lschema2.get(j), 
-								row2[j] = UtilFunctions.doubleToObject(lschema2.get(j), B[i][j]));
+					for( int j=0; j<lschema2.length; j++ )
+						B[i][j] = UtilFunctions.objectToDouble(lschema2[j], 
+								row2[j] = UtilFunctions.doubleToObject(lschema2[j], B[i][j]));
 					frame2.appendRow(row2);
 				}
 				
 				//matrix indexing
 				MatrixBlock mbA = DataConverter.convertToMatrixBlock(A);
 				MatrixBlock mbB = DataConverter.convertToMatrixBlock(B);
-				mbC = mbA.leftIndexingOperations(mbB, rl, ru, cl, cu, new MatrixBlock(), false);
+				mbC = mbA.leftIndexingOperations(mbB, rl, ru, cl, cu, new MatrixBlock(), UpdateType.COPY);
 				
 				//frame indexing
 				frame3 = frame1.leftIndexingOperations(frame2, rl, ru, cl, cu, new FrameBlock());				
@@ -144,10 +140,10 @@ public class FrameIndexingTest extends AutomatedTestBase
 				Assert.fail("Wrong number of rows: "+frame3.getNumRows()+", expected: "+mbC.getNumRows());
 		
 			//check correct values
-			List<ValueType> lschema = frame3.getSchema();
+			ValueType[] lschema = frame3.getSchema();
 			for( int i=0; i<ru-rl+1; i++ ) 
-				for( int j=0; j<lschema.size(); j++ )	{
-					double tmp = UtilFunctions.objectToDouble(lschema.get(j), frame3.get(i, j));
+				for( int j=0; j<lschema.length; j++ )	{
+					double tmp = UtilFunctions.objectToDouble(lschema[j], frame3.get(i, j));
 					if( tmp != mbC.quickGetValue(i, j) )
 						Assert.fail("Wrong get value for cell ("+i+","+j+"): "+tmp+", expected: "+mbC.quickGetValue(i, j));
 				}		

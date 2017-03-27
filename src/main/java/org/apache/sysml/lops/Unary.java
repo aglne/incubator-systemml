@@ -43,6 +43,7 @@ public class Unary extends Lop
 		ROUND, CEIL, FLOOR, MR_IQM, INVERSE, CHOLESKY,
 		CUMSUM, CUMPROD, CUMMIN, CUMMAX,
 		SPROP, SIGMOID, SELP, SUBTRACT_NZ, LOG_NZ,
+		CAST_AS_MATRIX, CAST_AS_FRAME,
 		NOTSUPPORTED
 	};
 
@@ -56,20 +57,18 @@ public class Unary extends Lop
 	/**
 	 * Constructor to perform a unary operation with 2 inputs
 	 * 
-	 * @param input
-	 * @param op
+	 * @param input1 low-level operator 1
+	 * @param input2 low-level operator 2
+	 * @param op operation type
+	 * @param dt data type
+	 * @param vt value type
+	 * @param et execution type
 	 */
-
 	public Unary(Lop input1, Lop input2, OperationTypes op, DataType dt, ValueType vt, ExecType et) {
 		super(Lop.Type.UNARY, dt, vt);
 		init(input1, input2, op, dt, vt, et);
 	}
-	
-	public Unary(Lop input1, Lop input2, OperationTypes op, DataType dt, ValueType vt) {
-		super(Lop.Type.UNARY, dt, vt);
-		init(input1, input2, op, dt, vt, ExecType.MR);
-	}
-	
+
 	private void init(Lop input1, Lop input2, OperationTypes op, DataType dt, ValueType vt, ExecType et) {
 		operation = op;
 
@@ -108,9 +107,13 @@ public class Unary extends Lop
 	/**
 	 * Constructor to perform a unary operation with 1 input.
 	 * 
-	 * @param input1
-	 * @param op
-	 * @throws LopsException 
+	 * @param input1 low-level operator 1
+	 * @param op operation type
+	 * @param dt data type
+	 * @param vt value type
+	 * @param et execution type
+	 * @param numThreads number of threads
+	 * @throws LopsException if LopsException occurs
 	 */
 	public Unary(Lop input1, OperationTypes op, DataType dt, ValueType vt, ExecType et, int numThreads) 
 		throws LopsException 
@@ -119,14 +122,7 @@ public class Unary extends Lop
 		init(input1, op, dt, vt, et);
 		_numThreads = numThreads;
 	}
-	
-	public Unary(Lop input1, OperationTypes op, DataType dt, ValueType vt) 
-		throws LopsException 
-	{
-		super(Lop.Type.UNARY, dt, vt);
-		init(input1, op, dt, vt, ExecType.MR);
-	}
-	
+
 	private void init(Lop input1, OperationTypes op, DataType dt, ValueType vt, ExecType et) 
 		throws LopsException 
 	{
@@ -174,23 +170,12 @@ public class Unary extends Lop
 			return "Operation: " + operation + " " + "Label: N/A";
 	}
 
-	/**
-	 * 
-	 * @return
-	 * @throws LopsException
-	 */
 	private String getOpcode() 
 		throws LopsException 
 	{
 		return getOpcode(operation);
 	}
-	
-	/**
-	 * 
-	 * @param op
-	 * @return
-	 * @throws LopsException
-	 */
+
 	public static String getOpcode(OperationTypes op) 
 		throws LopsException 
 	{
@@ -326,17 +311,18 @@ public class Unary extends Lop
 		case SELP:
 			return "sel+";
 		
+		case CAST_AS_MATRIX:
+			return UnaryCP.CAST_AS_MATRIX_OPCODE;
+
+		case CAST_AS_FRAME:
+			return UnaryCP.CAST_AS_FRAME_OPCODE;
+			
 		default:
 			throw new LopsException(
 					"Instruction not defined for Unary operation: " + op);
 		}
 	}
 	
-	/**
-	 * 
-	 * @param op
-	 * @return
-	 */
 	public static boolean isCumulativeOp(OperationTypes op) {
 		return op==OperationTypes.CUMSUM
 			|| op==OperationTypes.CUMPROD
@@ -374,9 +360,8 @@ public class Unary extends Lop
 	}
 	
 	@Override
-	public String getInstructions(int input_index, int output_index)
-			throws LopsException {
-		return getInstructions(""+input_index, ""+output_index);
+	public String getInstructions(int input_index, int output_index) throws LopsException {
+		return getInstructions(String.valueOf(input_index), String.valueOf(output_index));
 	}
 
 	@Override
@@ -385,26 +370,23 @@ public class Unary extends Lop
 	{
 		StringBuilder sb = new StringBuilder();
 		sb.append( getExecType() );
+		
 		sb.append( Lop.OPERAND_DELIMITOR );
 		sb.append( getOpcode() );
-		sb.append( OPERAND_DELIMITOR );
 		
-		if ( getInputs().get(0).getDataType() == DataType.SCALAR ) {
+		sb.append( OPERAND_DELIMITOR );
+		if ( getInputs().get(0).getDataType() == DataType.SCALAR )
 			sb.append( getInputs().get(0).prepScalarInputOperand(getExecType()));
-		}
-		else {
+		else
 			sb.append( getInputs().get(0).prepInputOperand(input1));
-		}
-		sb.append( OPERAND_DELIMITOR );
 		
-		if ( getInputs().get(1).getDataType() == DataType.SCALAR ) {
+		sb.append( OPERAND_DELIMITOR );
+		if ( getInputs().get(1).getDataType() == DataType.SCALAR )
 			sb.append( getInputs().get(1).prepScalarInputOperand(getExecType()));
-		}
-		else {
+		else 
 			sb.append( getInputs().get(1).prepInputOperand(input2));
-		}
-		sb.append( OPERAND_DELIMITOR );
 		
+		sb.append( OPERAND_DELIMITOR );
 		sb.append( this.prepOutputOperand(output));
 		
 		return sb.toString();
@@ -469,7 +451,7 @@ public class Unary extends Lop
 				sb.append( getInputs().get(scalarIndex).prepScalarInputOperand(getExecType()));
 				sb.append( OPERAND_DELIMITOR );
 			}
-			sb.append( this.prepOutputOperand(outputIndex+""));
+			sb.append( prepOutputOperand(outputIndex) );
 			
 			return sb.toString();
 			

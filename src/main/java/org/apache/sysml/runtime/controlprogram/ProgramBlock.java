@@ -27,13 +27,15 @@ import org.apache.sysml.api.DMLScript;
 import org.apache.sysml.api.MLContextProxy;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.hops.Hop;
+import org.apache.sysml.hops.OptimizerUtils;
 import org.apache.sysml.hops.recompile.Recompiler;
+import org.apache.sysml.lops.Lop;
 import org.apache.sysml.parser.StatementBlock;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.DMLScriptException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
+import org.apache.sysml.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.Instruction;
 import org.apache.sysml.runtime.instructions.cp.BooleanObject;
@@ -50,8 +52,7 @@ import org.apache.sysml.yarn.DMLAppMasterUtils;
 
 
 public class ProgramBlock 
-{	
-	
+{		
 	protected static final Log LOG = LogFactory.getLog(ProgramBlock.class.getName());
 	private static final boolean CHECK_MATRIX_SPARSITY = false;
 	
@@ -63,9 +64,7 @@ public class ProgramBlock
 	protected long _tid = 0; //by default _t0
 	
 	
-	public ProgramBlock(Program prog) 
-		throws DMLRuntimeException 
-	{	
+	public ProgramBlock(Program prog) {	
 		_prog = prog;
 		_inst = new ArrayList<Instruction>();
 	}
@@ -127,12 +126,11 @@ public class ProgramBlock
 	/**
 	 * Executes this program block (incl recompilation if required).
 	 * 
-	 * @param ec
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
+	 * @param ec execution context
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public void execute(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		ArrayList<Instruction> tmp = _inst;
 
@@ -171,14 +169,16 @@ public class ProgramBlock
 	/**
 	 * Executes given predicate instructions (incl recompilation if required)
 	 * 
-	 * @param inst
-	 * @param hops
-	 * @param ec
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
+	 * @param inst list of instructions
+	 * @param hops high-level operator
+	 * @param requiresRecompile true if requires recompile
+	 * @param retType value type of the return type
+	 * @param ec execution context
+	 * @return scalar object
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	public ScalarObject executePredicate(ArrayList<Instruction> inst, Hop hops, boolean requiresRecompile, ValueType retType, ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		ArrayList<Instruction> tmp = inst;
 		
@@ -206,15 +206,8 @@ public class ProgramBlock
 		return executePredicateInstructions(tmp, retType, ec);
 	}
 
-	/**
-	 * 
-	 * @param inst
-	 * @param ec
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
 	protected void executeInstructions(ArrayList<Instruction> inst, ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		for (int i = 0; i < inst.size(); i++) 
 		{
@@ -226,16 +219,9 @@ public class ProgramBlock
 			executeSingleInstruction(currInst, ec);
 		}
 	}
-	
-	/**
-	 * 
-	 * @param inst
-	 * @param ec
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
+
 	protected ScalarObject executePredicateInstructions(ArrayList<Instruction> inst, ValueType retType, ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		ScalarObject ret = null;
 		String retName = null;
@@ -285,13 +271,7 @@ public class ProgramBlock
 			
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * 
-	 * @param currInst
-	 * @throws DMLRuntimeException 
-	 */
+
 	private void executeSingleInstruction( Instruction currInst, ExecutionContext ec ) 
 		throws DMLRuntimeException
 	{	
@@ -313,7 +293,7 @@ public class ProgramBlock
 			// maintain aggregate statistics
 			if( DMLScript.STATISTICS) {
 				Statistics.maintainCPHeavyHitters(
-						tmp.getExtendedOpcode(), System.nanoTime()-t0);
+					tmp.getExtendedOpcode(), System.nanoTime()-t0);
 			}
 				
 			// optional trace information (instruction and runtime)
@@ -342,30 +322,58 @@ public class ProgramBlock
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param inst
-	 * @return
-	 */
+
+	protected UpdateType[] prepareUpdateInPlaceVariables(ExecutionContext ec, long tid) 
+		throws DMLRuntimeException
+	{
+		if( _sb == null || _sb.getUpdateInPlaceVars().isEmpty() )
+			return null;
+		
+		ArrayList<String> varnames = _sb.getUpdateInPlaceVars();
+		UpdateType[] flags = new UpdateType[varnames.size()];
+		for( int i=0; i<flags.length; i++ )
+			if( ec.getVariable(varnames.get(i)) != null ) {
+				String varname = varnames.get(i);
+				MatrixObject mo = ec.getMatrixObject(varname);
+				flags[i] = mo.getUpdateType();
+				//create deep copy if required and if it fits in thread-local mem budget
+				if( flags[i]==UpdateType.COPY && OptimizerUtils.getLocalMemBudget()/2 >
+					OptimizerUtils.estimateSizeExactSparsity(mo.getMatrixCharacteristics())) {
+					MatrixObject moNew = new MatrixObject(mo); 
+					MatrixBlock mbVar = mo.acquireRead();  
+					moNew.acquireModify( !mbVar.isInSparseFormat() ? new MatrixBlock(mbVar) : 
+						new MatrixBlock(mbVar, MatrixBlock.DEFAULT_INPLACE_SPARSEBLOCK, true) );
+					moNew.setFileName(mo.getFileName()+Lop.UPDATE_INPLACE_PREFIX+tid);
+					mo.release();
+					moNew.release();			
+					moNew.setUpdateType(UpdateType.INPLACE);
+					ec.setVariable(varname, moNew);
+				}
+			}
+		
+		return flags;
+	}
+
+	protected void resetUpdateInPlaceVariableFlags(ExecutionContext ec, UpdateType[] flags) 
+		throws DMLRuntimeException
+	{
+		if( flags == null )
+			return;
+		
+		//reset update-in-place flag to pre-loop status
+		ArrayList<String> varnames = _sb.getUpdateInPlaceVars();
+		for( int i=0; i<varnames.size(); i++ )
+			if( ec.getVariable(varnames.get(i)) != null && flags[i] !=null ) {
+				MatrixObject mo = ec.getMatrixObject(varnames.get(i));
+				mo.setUpdateType(flags[i]);
+			}
+	}
+
 	private boolean isRemoveVariableInstruction(Instruction inst)
 	{
 		return ( inst instanceof VariableCPInstruction && ((VariableCPInstruction)inst).isRemoveVariable() );
 	}
-	
-	public void printMe() {
-		//System.out.println("***** INSTRUCTION BLOCK *****");
-		for (Instruction i : this._inst) {
-			i.printMe();
-		}
-	}
-	
-	/**
-	 * 
-	 * @param lastInst
-	 * @param vars
-	 * @throws DMLRuntimeException
-	 */
+
 	private void checkSparsity( Instruction lastInst, LocalVariableMap vars )
 		throws DMLRuntimeException
 	{
@@ -390,10 +398,10 @@ public class ProgramBlock
 					
 					if( nnz1 != nnz2 )
 						throw new DMLRuntimeException("Matrix nnz meta data was incorrect: ("+varname+", actual="+nnz1+", expected="+nnz2+", inst="+lastInst+")");
-							
 					
 					if( sparse1 != sparse2 )
-						throw new DMLRuntimeException("Matrix was in wrong data representation: ("+varname+", actual="+sparse1+", expected="+sparse2+", nnz="+nnz1+", inst="+lastInst+")");
+						throw new DMLRuntimeException("Matrix was in wrong data representation: ("+varname+", actual="+sparse1+", expected="+sparse2 + 
+								", nrow="+mb.getNumRows()+", ncol="+mb.getNumColumns()+", nnz="+nnz1+", inst="+lastInst+")");
 				}
 			}
 		}
@@ -422,16 +430,8 @@ public class ProgramBlock
 	public int getBeginColumn() { return _beginColumn; }
 	public int getEndLine() 	{ return _endLine;   }
 	public int getEndColumn()	{ return _endColumn; }
-	
-	public String printErrorLocation(){
-		return "ERROR: line " + _beginLine + ", column " + _beginColumn + " -- ";
-	}
-	
+
 	public String printBlockErrorLocation(){
 		return "ERROR: Runtime error in program block generated from statement block between lines " + _beginLine + " and " + _endLine + " -- ";
-	}
-	
-	public String printWarningLocation(){
-		return "WARNING: line " + _beginLine + ", column " + _beginColumn + " -- ";
 	}
 }

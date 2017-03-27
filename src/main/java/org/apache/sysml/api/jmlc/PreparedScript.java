@@ -21,6 +21,7 @@ package org.apache.sysml.api.jmlc;
 
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -28,6 +29,7 @@ import java.util.Map.Entry;
 
 import org.apache.sysml.api.DMLException;
 import org.apache.sysml.conf.ConfigurationManager;
+import org.apache.sysml.hops.OptimizerUtils;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysml.runtime.controlprogram.Program;
@@ -51,9 +53,7 @@ import org.apache.sysml.runtime.util.DataConverter;
 import org.apache.sysml.utils.Explain;
 
 /**
- * JMLC (Java Machine Learning Connector) API:
- * 
- * NOTE: Currently fused API and implementation in order to reduce complexity. 
+ * Representation of a prepared (precompiled) DML/PyDML script.
  */
 public class PreparedScript 
 {
@@ -66,8 +66,12 @@ public class PreparedScript
 	private Program _prog = null;
 	private LocalVariableMap _vars = null; 
 	
-	/** 
-	 * Meant to be invoked only from Connection 
+	/**
+	 * Meant to be invoked only from Connection.
+	 * 
+	 * @param prog the DML/PyDML program
+	 * @param inputs input variables to register
+	 * @param outputs output variables to register
 	 */
 	protected PreparedScript( Program prog, String[] inputs, String[] outputs ) 
 	{
@@ -76,50 +80,99 @@ public class PreparedScript
 		
 		//populate input/output vars
 		_inVarnames = new HashSet<String>();
-		for( String var : inputs )
-			_inVarnames.add( var );
+		Collections.addAll(_inVarnames, inputs);
 		_outVarnames = new HashSet<String>();
-		for( String var : outputs )
-			_outVarnames.add( var );
+		Collections.addAll(_outVarnames, outputs);
 		_inVarReuse = new HashMap<String, Data>();
 	}
 	
-	/** Binds a scalar boolean to a registered input variable. */
+	/**
+	 * Binds a scalar boolean to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar boolean value
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, boolean scalar) throws DMLException {
 		setScalar(varname, scalar, false);
 	}
 	
-	/** Binds a scalar boolean to a registered input variable. */
+	/**
+	 * Binds a scalar boolean to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar boolean value
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, boolean scalar, boolean reuse) throws DMLException {
 		setScalar(varname, new BooleanObject(varname, scalar), reuse);
 	}
 	
-	/** Binds a scalar long to a registered input variable. */
+	/**
+	 * Binds a scalar long to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar long value
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, long scalar) throws DMLException {
 		setScalar(varname, scalar, false);
 	}
 	
-	/** Binds a scalar long to a registered input variable. */
+	/**
+	 * Binds a scalar long to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar long value
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, long scalar, boolean reuse) throws DMLException {
 		setScalar(varname, new IntObject(varname, scalar), reuse);
 	}
 	
-	/** Binds a scalar double to a registered input variable. */
+	/** Binds a scalar double to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar double value
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, double scalar) throws DMLException {
 		setScalar(varname, scalar, false);
 	}
 	
-	/** Binds a scalar double to a registered input variable. */
+	/**
+	 * Binds a scalar double to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar double value
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, double scalar, boolean reuse) throws DMLException {
 		setScalar(varname, new DoubleObject(varname, scalar), reuse);
 	}
 	
-	/** Binds a scalar string to a registered input variable. */
+	/**
+	 * Binds a scalar string to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar string value
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, String scalar) throws DMLException {
 		setScalar(varname, scalar, false);
 	}
 	
-	/** Binds a scalar string to a registered input variable. */
+	/**
+	 * Binds a scalar string to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param scalar string value
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setScalar(String varname, String scalar, boolean reuse) throws DMLException {
 		setScalar(varname, new StringObject(varname, scalar), reuse);
 	}
@@ -129,10 +182,10 @@ public class PreparedScript
 	 * If reuse requested, then the input is guaranteed to be 
 	 * preserved over multiple <code>executeScript</code> calls. 
 	 * 
-	 * @param varname
-	 * @param scalar
-	 * @param reuse
-	 * @throws DMLException
+	 * @param varname input variable name
+	 * @param scalar scalar object
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
 	 */
 	public void setScalar(String varname, ScalarObject scalar, boolean reuse) 
 		throws DMLException
@@ -143,12 +196,25 @@ public class PreparedScript
 		_vars.put(varname, scalar);
 	}
 
-	/** Binds a matrix object to a registered input variable. */
+	/**
+	 * Binds a matrix object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param matrix two-dimensional double array matrix representation
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setMatrix(String varname, double[][] matrix) throws DMLException {
 		setMatrix(varname, matrix, false);
 	}
 	
-	/** Binds a matrix object to a registered input variable. */
+	/**
+	 * Binds a matrix object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param matrix two-dimensional double array matrix representation
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setMatrix(String varname, double[][] matrix, boolean reuse) throws DMLException {
 		setMatrix(varname, DataConverter.convertToMatrixBlock(matrix), reuse);
 	}
@@ -158,9 +224,10 @@ public class PreparedScript
 	 * If reuse requested, then the input is guaranteed to be 
 	 * preserved over multiple <code>executeScript</code> calls. 
 	 * 
-	 * @param varname
-	 * @param matrix
-	 * @throws DMLException
+	 * @param varname input variable name
+	 * @param matrix matrix represented as a MatrixBlock
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
 	 */
 	public void setMatrix(String varname, MatrixBlock matrix, boolean reuse)
 		throws DMLException
@@ -168,13 +235,12 @@ public class PreparedScript
 		if( !_inVarnames.contains(varname) )
 			throw new DMLException("Unspecified input variable: "+varname);
 				
-		String scratch_space = ConfigurationManager.getScratchSpace();
 		int blocksize = ConfigurationManager.getBlocksize();
 		
 		//create new matrix object
 		MatrixCharacteristics mc = new MatrixCharacteristics(matrix.getNumRows(), matrix.getNumColumns(), blocksize, blocksize);
 		MatrixFormatMetaData meta = new MatrixFormatMetaData(mc, OutputInfo.BinaryBlockOutputInfo, InputInfo.BinaryBlockInputInfo);
-		MatrixObject mo = new MatrixObject(ValueType.DOUBLE, scratch_space+"/"+varname, meta);
+		MatrixObject mo = new MatrixObject(ValueType.DOUBLE, OptimizerUtils.getUniqueTempFileName(), meta);
 		mo.acquireModify(matrix); 
 		mo.release();
 		
@@ -186,34 +252,80 @@ public class PreparedScript
 		}
 	}
 
-	/** Binds a frame object to a registered input variable. */
+	/**
+	 * Binds a frame object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param frame two-dimensional string array frame representation
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setFrame(String varname, String[][] frame) throws DMLException {
 		setFrame(varname, frame, false);
 	}
 	
-	/** Binds a frame object to a registered input variable. */
+	/**
+	 * Binds a frame object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param frame two-dimensional string array frame representation
+	 * @param schema list representing the types of the frame columns
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setFrame(String varname, String[][] frame, List<ValueType> schema) throws DMLException {
 		setFrame(varname, frame, schema, false);
 	}
 	
-	/** Binds a frame object to a registered input variable. */
+	/**
+	 * Binds a frame object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param frame two-dimensional string array frame representation
+	 * @param schema list representing the types of the frame columns
+	 * @param colnames frame column names
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setFrame(String varname, String[][] frame, List<ValueType> schema, List<String> colnames) throws DMLException {
 		setFrame(varname, frame, schema, colnames, false);
 	}
 	
-	/** Binds a frame object to a registered input variable. */
+	/**
+	 * Binds a frame object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param frame two-dimensional string array frame representation
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setFrame(String varname, String[][] frame, boolean reuse) throws DMLException {
 		setFrame(varname, DataConverter.convertToFrameBlock(frame), reuse);
 	}
 	
-	/** Binds a frame object to a registered input variable. */
+	/**
+	 * Binds a frame object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param frame two-dimensional string array frame representation
+	 * @param schema list representing the types of the frame columns
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setFrame(String varname, String[][] frame, List<ValueType> schema, boolean reuse) throws DMLException {
-		setFrame(varname, DataConverter.convertToFrameBlock(frame, schema), reuse);
+		setFrame(varname, DataConverter.convertToFrameBlock(frame, schema.toArray(new ValueType[0])), reuse);
 	}
 	
-	/** Binds a frame object to a registered input variable. */
+	/**
+	 * Binds a frame object to a registered input variable.
+	 * 
+	 * @param varname input variable name
+	 * @param frame two-dimensional string array frame representation
+	 * @param schema list representing the types of the frame columns
+	 * @param colnames frame column names
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
+	 */
 	public void setFrame(String varname, String[][] frame, List<ValueType> schema, List<String> colnames, boolean reuse) throws DMLException {
-		setFrame(varname, DataConverter.convertToFrameBlock(frame, schema, colnames), reuse);
+		setFrame(varname, DataConverter.convertToFrameBlock( frame, 
+				schema.toArray(new ValueType[0]), colnames.toArray(new String[0])), reuse);
 	}
 	
 	/**
@@ -221,23 +333,21 @@ public class PreparedScript
 	 * If reuse requested, then the input is guaranteed to be 
 	 * preserved over multiple <code>executeScript</code> calls. 
 	 * 
-	 * @param varname
-	 * @param frame
-	 * @param reuse
-	 * @throws DMLException
+	 * @param varname input variable name
+	 * @param frame frame represented as a FrameBlock
+	 * @param reuse if {@code true}, preserve value over multiple {@code executeScript} calls
+	 * @throws DMLException if DMLException occurs
 	 */
 	public void setFrame(String varname, FrameBlock frame, boolean reuse)
 		throws DMLException
 	{
 		if( !_inVarnames.contains(varname) )
 			throw new DMLException("Unspecified input variable: "+varname);
-				
-		String scratch_space = ConfigurationManager.getScratchSpace();
 		
 		//create new frame object
 		MatrixCharacteristics mc = new MatrixCharacteristics(frame.getNumRows(), frame.getNumColumns(), -1, -1);
 		MatrixFormatMetaData meta = new MatrixFormatMetaData(mc, OutputInfo.BinaryCellOutputInfo, InputInfo.BinaryCellInputInfo);
-		FrameObject fo = new FrameObject(scratch_space+"/"+varname, meta);
+		FrameObject fo = new FrameObject(OptimizerUtils.getUniqueTempFileName(), meta);
 		fo.acquireModify(frame);
 		fo.release();
 		
@@ -259,10 +369,10 @@ public class PreparedScript
 	
 	/**
 	 * Executes the prepared script over the bound inputs, creating the
-	 * result variables according to bound and registered outputs. 
+	 * result variables according to bound and registered outputs.
 	 * 
-	 * @return
-	 * @throws DMLException 
+	 * @return ResultVariables object encapsulating output results
+	 * @throws DMLException if DMLException occurs
 	 */
 	public ResultVariables executeScript() 
 		throws DMLException
@@ -294,9 +404,10 @@ public class PreparedScript
 	}
 	
 	/**
+	 * Explain the DML/PyDML program and view result as a string.
 	 * 
-	 * @return
-	 * @throws DMLException
+	 * @return string results of explain
+	 * @throws DMLException if DMLException occurs
 	 */
 	public String explain() throws DMLException {
 		return Explain.explain(_prog);

@@ -30,7 +30,6 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.regex.Pattern;
 
 import org.apache.hadoop.fs.FileStatus;
@@ -56,6 +55,8 @@ import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.parser.ParameterizedBuiltinFunctionExpression;
 import org.apache.sysml.runtime.DMLRuntimeException;
+import org.apache.sysml.runtime.controlprogram.caching.CacheableData;
+import org.apache.sysml.runtime.controlprogram.caching.FrameObject;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.controlprogram.context.SparkExecutionContext;
@@ -67,18 +68,17 @@ import org.apache.sysml.runtime.instructions.mr.CSVReblockInstruction;
 import org.apache.sysml.runtime.instructions.spark.ParameterizedBuiltinSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.data.RDDObject;
 import org.apache.sysml.runtime.instructions.spark.utils.RDDConverterUtils;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.matrix.CSVReblockMR;
 import org.apache.sysml.runtime.matrix.CSVReblockMR.AssignRowIDMRReturn;
 import org.apache.sysml.runtime.matrix.JobReturn;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
 import org.apache.sysml.runtime.matrix.data.CSVFileFormatProperties;
 import org.apache.sysml.runtime.matrix.data.FileFormatProperties;
-import org.apache.sysml.runtime.matrix.data.FrameBlock;
 import org.apache.sysml.runtime.matrix.data.InputInfo;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.OutputInfo;
 import org.apache.sysml.runtime.matrix.mapred.MRJobConfiguration;
-import org.apache.sysml.runtime.transform.TransformationAgent.TX_METHOD;
 import org.apache.sysml.runtime.util.MapReduceTool;
 import org.apache.sysml.runtime.util.UtilFunctions;
 import org.apache.sysml.utils.JSONHelper;
@@ -91,18 +91,17 @@ public class DataTransform
 	/**
 	 * Method to read the header line from the input data file.
 	 * 
-	 * @param fs
-	 * @param prop
-	 * @param smallestFile
-	 * @return
-	 * @throws IOException
+	 * @param fs file system
+	 * @param prop csv file format properties
+	 * @param smallestFile file name
+	 * @return header line
+	 * @throws IOException if IOException occurs
 	 */
 	private static String readHeaderLine(FileSystem fs, CSVFileFormatProperties prop, String smallestFile) throws IOException {
 		String line = null;
-		
-		BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(new Path(smallestFile))));
-		line = br.readLine();
-		br.close();
+		try( BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(new Path(smallestFile)))) ) {
+			line = br.readLine();
+		}
 		if(prop.hasHeader()) {
 			; // nothing here
 		}
@@ -126,13 +125,13 @@ public class DataTransform
 	 * corresponding column IDs. The mapping is used to prepare the
 	 * specification file in <code>processSpecFile()</code>.
 	 * 
-	 * @param fs
-	 * @param prop
-	 * @param headerLine
-	 * @param smallestFile
-	 * @return
-	 * @throws IllegalArgumentException
-	 * @throws IOException
+	 * @param fs file system
+	 * @param prop csv file format properties
+	 * @param headerLine header line
+	 * @param smallestFile file name
+	 * @return map of column names and their column IDs
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws IOException if IOException occurs
 	 */
 	private static HashMap<String, Integer> processColumnNames(FileSystem fs, CSVFileFormatProperties prop, String headerLine, String smallestFile) throws IllegalArgumentException, IOException {
 		HashMap<String, Integer> colNames = new HashMap<String,Integer>();
@@ -151,10 +150,10 @@ public class DataTransform
 	 * In-place permutation of list, mthd, and cst arrays based on indices,
 	 * by navigating through cycles in the permutation. 
 	 * 
-	 * @param list
-	 * @param mthd
-	 * @param cst
-	 * @param indices
+	 * @param list ?
+	 * @param mthd ?
+	 * @param cst ?
+	 * @param indices ?
 	 */
 	private static void inplacePermute(int[] list, byte[] mthd, Object[] cst, Integer[] indices) 
 	{
@@ -194,16 +193,16 @@ public class DataTransform
 	 * specification with corresponding column Ids. This file is sent to all the
 	 * relevant MR jobs.
 	 * 
-	 * @param fs
-	 * @param inputPath
-	 * @param smallestFile
-	 * @param colNames
-	 * @param prop
-	 * @param specFileWithNames
-	 * @return
-	 * @throws IllegalArgumentException
-	 * @throws IOException
-	 * @throws JSONException 
+	 * @param fs file system
+	 * @param inputPath input file path
+	 * @param smallestFile file name
+	 * @param colNames column names
+	 * @param prop csv file format properties
+	 * @param specFileWithNames ?
+	 * @return specification as a JSONObject
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws IOException if IOException occurs
+	 * @throws JSONException if JSONException occurs
 	 */
 	private static String processSpecFile(FileSystem fs, String inputPath, String smallestFile, HashMap<String,Integer> colNames, CSVFileFormatProperties prop, String specWithNames) throws IllegalArgumentException, IOException, JSONException {
 		JSONObject inputSpec = new JSONObject(specWithNames);
@@ -237,8 +236,8 @@ public class DataTransform
 		
 		// --------------------------------------------------------------------------
 		// Omit
-		if( inputSpec.containsKey(TX_METHOD.OMIT.toString()) ) {
-			JSONArray arrtmp = (JSONArray) inputSpec.get(TX_METHOD.OMIT.toString());
+		if( inputSpec.containsKey(TfUtils.TXMETHOD_OMIT) ) {
+			JSONArray arrtmp = (JSONArray) inputSpec.get(TfUtils.TXMETHOD_OMIT);
 			omitList = new int[arrtmp.size()];
 			for(int i=0; i<arrtmp.size(); i++) {
 				if(byPositions)
@@ -254,8 +253,8 @@ public class DataTransform
 			omitList = null;
 		// --------------------------------------------------------------------------
 		// Missing value imputation
-		if( inputSpec.containsKey(TX_METHOD.IMPUTE.toString()) ) {
-			JSONArray arrtmp = (JSONArray) inputSpec.get(TX_METHOD.IMPUTE.toString());
+		if( inputSpec.containsKey(TfUtils.TXMETHOD_IMPUTE) ) {
+			JSONArray arrtmp = (JSONArray) inputSpec.get(TfUtils.TXMETHOD_IMPUTE);
 			
 			mvList = new int[arrtmp.size()];
 			mvMethods = new byte[arrtmp.size()];
@@ -306,8 +305,8 @@ public class DataTransform
 			mvList = null;
 		// --------------------------------------------------------------------------
 		// Recoding
-		if( inputSpec.containsKey(TX_METHOD.RECODE.toString()) ) {
-			JSONArray arrtmp = (JSONArray) inputSpec.get(TX_METHOD.RECODE.toString());
+		if( inputSpec.containsKey(TfUtils.TXMETHOD_RECODE) ) {
+			JSONArray arrtmp = (JSONArray) inputSpec.get(TfUtils.TXMETHOD_RECODE);
 			rcdList = new int[arrtmp.size()];
 			for(int i=0; i<arrtmp.size(); i++) {
 				if (byPositions)
@@ -323,8 +322,8 @@ public class DataTransform
 			rcdList = null;
 		// --------------------------------------------------------------------------
 		// Binning
-		if( inputSpec.containsKey(TX_METHOD.BIN.toString()) ) {
-			JSONArray arrtmp = (JSONArray) inputSpec.get(TX_METHOD.BIN.toString());
+		if( inputSpec.containsKey(TfUtils.TXMETHOD_BIN) ) {
+			JSONArray arrtmp = (JSONArray) inputSpec.get(TfUtils.TXMETHOD_BIN);
 			
 			binList = new int[arrtmp.size()];
 			binMethods = new byte[arrtmp.size()];
@@ -349,7 +348,7 @@ public class DataTransform
 					throw new IOException("Unknown missing value imputation method (" + stmp + ") in transformation specification: " + specWithNames);
 				binMethods[i] = btmp;
 				
-				numBins[i] = entry.get(TransformationAgent.JSON_NBINS);
+				numBins[i] = entry.get(TfUtils.JSON_NBINS);
 				if ( ((Integer) numBins[i]).intValue() <= 1 ) 
 					throw new IllegalArgumentException("Invalid transformation on column \"" + (String) entry.get(NAME) + "\". Number of bins must be greater than 1.");
 			}
@@ -371,8 +370,8 @@ public class DataTransform
 			binList = null;
 		// --------------------------------------------------------------------------
 		// Dummycoding
-		if( inputSpec.containsKey(TX_METHOD.DUMMYCODE.toString()) ) {
-			JSONArray arrtmp = (JSONArray) inputSpec.get(TX_METHOD.DUMMYCODE.toString());
+		if( inputSpec.containsKey(TfUtils.TXMETHOD_DUMMYCODE) ) {
+			JSONArray arrtmp = (JSONArray) inputSpec.get(TfUtils.TXMETHOD_DUMMYCODE);
 			dcdList = new int[arrtmp.size()];
 			for(int i=0; i<arrtmp.size(); i++) {
 				if (byPositions)
@@ -388,8 +387,8 @@ public class DataTransform
 			dcdList = null;
 		// --------------------------------------------------------------------------
 		// Scaling
-		if(inputSpec.containsKey(TX_METHOD.SCALE.toString()) ) {
-			JSONArray arrtmp = (JSONArray) inputSpec.get(TX_METHOD.SCALE.toString());
+		if(inputSpec.containsKey(TfUtils.TXMETHOD_SCALE) ) {
+			JSONArray arrtmp = (JSONArray) inputSpec.get(TfUtils.TXMETHOD_SCALE);
 			
 			scaleList = new int[arrtmp.size()];
 			scaleMethods = new byte[arrtmp.size()];
@@ -535,55 +534,55 @@ public class DataTransform
 		if (omitList != null)
 		{
 			JSONObject rcdSpec = new JSONObject();
-			rcdSpec.put(TransformationAgent.JSON_ATTRS, toJSONArray(omitList));
-			outputSpec.put(TX_METHOD.OMIT.toString(), rcdSpec);
+			rcdSpec.put(TfUtils.JSON_ATTRS, toJSONArray(omitList));
+			outputSpec.put(TfUtils.TXMETHOD_OMIT, rcdSpec);
 		}
 		
 		if (mvList != null)
 		{
 			JSONObject mvSpec = new JSONObject();
-			mvSpec.put(TransformationAgent.JSON_ATTRS, toJSONArray(mvList));
-			mvSpec.put(TransformationAgent.JSON_MTHD, toJSONArray(mvMethods));
-			mvSpec.put(TransformationAgent.JSON_CONSTS, toJSONArray(mvConstants));
-			outputSpec.put(TX_METHOD.IMPUTE.toString(), mvSpec);
+			mvSpec.put(TfUtils.JSON_ATTRS, toJSONArray(mvList));
+			mvSpec.put(TfUtils.JSON_MTHD, toJSONArray(mvMethods));
+			mvSpec.put(TfUtils.JSON_CONSTS, toJSONArray(mvConstants));
+			outputSpec.put(TfUtils.TXMETHOD_IMPUTE, mvSpec);
 		}
 		
 		if (rcdList != null)
 		{
 			JSONObject rcdSpec = new JSONObject();
-			rcdSpec.put(TransformationAgent.JSON_ATTRS, toJSONArray(rcdList));
-			outputSpec.put(TX_METHOD.RECODE.toString(), rcdSpec);
+			rcdSpec.put(TfUtils.JSON_ATTRS, toJSONArray(rcdList));
+			outputSpec.put(TfUtils.TXMETHOD_RECODE, rcdSpec);
 		}
 		
 		if (binList != null)
 		{
 			JSONObject binSpec = new JSONObject();
-			binSpec.put(TransformationAgent.JSON_ATTRS, toJSONArray(binList));
-			binSpec.put(TransformationAgent.JSON_MTHD, toJSONArray(binMethods));
-			binSpec.put(TransformationAgent.JSON_NBINS, toJSONArray(numBins));
-			outputSpec.put(TX_METHOD.BIN.toString(), binSpec);
+			binSpec.put(TfUtils.JSON_ATTRS, toJSONArray(binList));
+			binSpec.put(TfUtils.JSON_MTHD, toJSONArray(binMethods));
+			binSpec.put(TfUtils.JSON_NBINS, toJSONArray(numBins));
+			outputSpec.put(TfUtils.TXMETHOD_BIN, binSpec);
 		}
 		
 		if (dcdList != null)
 		{
 			JSONObject dcdSpec = new JSONObject();
-			dcdSpec.put(TransformationAgent.JSON_ATTRS, toJSONArray(dcdList));
-			outputSpec.put(TX_METHOD.DUMMYCODE.toString(), dcdSpec);
+			dcdSpec.put(TfUtils.JSON_ATTRS, toJSONArray(dcdList));
+			outputSpec.put(TfUtils.TXMETHOD_DUMMYCODE, dcdSpec);
 		}
 		
 		if (scaleList != null)
 		{
 			JSONObject scaleSpec = new JSONObject();
-			scaleSpec.put(TransformationAgent.JSON_ATTRS, toJSONArray(scaleList));
-			scaleSpec.put(TransformationAgent.JSON_MTHD, toJSONArray(scaleMethods));
-			outputSpec.put(TX_METHOD.SCALE.toString(), scaleSpec);
+			scaleSpec.put(TfUtils.JSON_ATTRS, toJSONArray(scaleList));
+			scaleSpec.put(TfUtils.JSON_MTHD, toJSONArray(scaleMethods));
+			outputSpec.put(TfUtils.TXMETHOD_SCALE, scaleSpec);
 		}
 		
 		if (mvrcdList != null)
 		{
 			JSONObject mvrcd = new JSONObject();
-			mvrcd.put(TransformationAgent.JSON_ATTRS, toJSONArray(mvrcdList));
-			outputSpec.put(TX_METHOD.MVRCD.toString(), mvrcd);
+			mvrcd.put(TfUtils.JSON_ATTRS, toJSONArray(mvrcdList));
+			outputSpec.put(TfUtils.TXMETHOD_MVRCD, mvrcd);
 		}
 		
 		// return output spec with IDs
@@ -622,11 +621,11 @@ public class DataTransform
 	 * temporary location, then MR tasks fail due to changing timestamps on
 	 * txMtdPath.
 	 * 
-	 * @param fs
-	 * @param tmpPath
-	 * @param txMtdPath
-	 * @throws IllegalArgumentException
-	 * @throws IOException
+	 * @param fs file system
+	 * @param tmpPath temporary location (directory) of transformation metadata files
+	 * @param txMtdPath directory where to place transformation metadata files
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws IOException if IOException occurs
 	 */
 	private static void moveFilesFromTmp(FileSystem fs, String tmpPath, String txMtdPath) throws IllegalArgumentException, IOException 
 	{
@@ -635,11 +634,11 @@ public class DataTransform
 		MapReduceTool.renameFileOnHDFS(tmpPath + "/" + TfUtils.TXMTD_DC_COLNAMES, txMtdPath + "/" + TfUtils.TXMTD_DC_COLNAMES);
 		MapReduceTool.renameFileOnHDFS(tmpPath + "/" + TfUtils.TXMTD_COLTYPES, txMtdPath + "/" + TfUtils.TXMTD_COLTYPES);
 		
-		if ( fs.exists(new Path(tmpPath +"/Dummycode/" + TransformationAgent.DCD_FILE_NAME)) ) 
+		if ( fs.exists(new Path(tmpPath +"/Dummycode/" + TfUtils.DCD_FILE_NAME)) ) 
 		{
 			if ( !fs.exists( new Path(txMtdPath + "/Dummycode/") )) 
 				fs.mkdirs(new Path(txMtdPath + "/Dummycode/"));
-			MapReduceTool.renameFileOnHDFS( tmpPath + "/Dummycode/" + TransformationAgent.DCD_FILE_NAME, txMtdPath + "/Dummycode/" + TransformationAgent.DCD_FILE_NAME);
+			MapReduceTool.renameFileOnHDFS( tmpPath + "/Dummycode/" + TfUtils.DCD_FILE_NAME, txMtdPath + "/Dummycode/" + TfUtils.DCD_FILE_NAME);
 		}
 	}
 	
@@ -647,84 +646,87 @@ public class DataTransform
 	 * Helper function to determine the number of columns after applying
 	 * transformations. Note that dummycoding changes the number of columns.
 	 * 
-	 * @param fs
-	 * @param header
-	 * @param delim
-	 * @param tfMtdPath
-	 * @return
-	 * @throws IllegalArgumentException
-	 * @throws IOException
-	 * @throws DMLRuntimeException
-	 * @throws JSONException 
+	 * @param fs file system
+	 * @param header header line
+	 * @param delim delimiter
+	 * @param tfMtdPath transform metadata path
+	 * @return number of columns after applying transformations
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws IOException if IOException occurs
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 * @throws JSONException  if JSONException occurs
 	 */
 	private static int getNumColumnsTf(FileSystem fs, String header, String delim, String tfMtdPath) throws IllegalArgumentException, IOException, DMLRuntimeException, JSONException {
 		String[] columnNames = Pattern.compile(Pattern.quote(delim)).split(header, -1);
 		int ret = columnNames.length;
 		
-		BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(new Path(tfMtdPath + "/spec.json"))));
-		JSONObject spec = JSONHelper.parse(br);
-		br.close();
+		JSONObject spec = null;
+		try(BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(new Path(tfMtdPath + "/spec.json"))))) {
+			spec = JSONHelper.parse(br);
+		}
 		
 		// fetch relevant attribute lists
-		if ( !spec.containsKey(TX_METHOD.DUMMYCODE.toString()) )
+		if ( !spec.containsKey(TfUtils.TXMETHOD_DUMMYCODE) )
 			return ret;
 		
-		JSONArray dcdList = (JSONArray) ((JSONObject)spec.get(TX_METHOD.DUMMYCODE.toString())).get(TransformationAgent.JSON_ATTRS);
+		JSONArray dcdList = (JSONArray) ((JSONObject)spec.get(TfUtils.TXMETHOD_DUMMYCODE)).get(TfUtils.JSON_ATTRS);
 
 		// look for numBins among binned columns
 		for(Object o : dcdList) 
 		{
 			int id = UtilFunctions.toInt(o);
 			
-			Path binpath = new Path( tfMtdPath + "/Bin/" + UtilFunctions.unquote(columnNames[id-1]) + TransformationAgent.BIN_FILE_SUFFIX);
+			Path binpath = new Path( tfMtdPath + "/Bin/" + UtilFunctions.unquote(columnNames[id-1]) + TfUtils.TXMTD_BIN_FILE_SUFFIX);
 			Path rcdpath = new Path( tfMtdPath + "/Recode/" + UtilFunctions.unquote(columnNames[id-1]) + TfUtils.TXMTD_RCD_DISTINCT_SUFFIX);
 			
 			if ( TfUtils.checkValidInputFile(fs, binpath, false ) )
 			{
-				br = new BufferedReader(new InputStreamReader(fs.open(binpath)));
-				int nbins = UtilFunctions.parseToInt(br.readLine().split(TfUtils.TXMTD_SEP)[4]);
-				br.close();
+				int nbins = -1;
+				try( BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(binpath)))) {
+					nbins = UtilFunctions.parseToInt(br.readLine().split(TfUtils.TXMTD_SEP)[4]);
+				}
 				ret += (nbins-1);
 			}
 			else if ( TfUtils.checkValidInputFile(fs, rcdpath, false ) )
 			{
-				br = new BufferedReader(new InputStreamReader(fs.open(rcdpath)));
-				int ndistinct = UtilFunctions.parseToInt(br.readLine());
-				br.close();
+				int ndistinct = -1;
+				try( BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(rcdpath))) ) {
+					ndistinct = UtilFunctions.parseToInt(br.readLine());
+				}
 				ret += (ndistinct-1);
 			}
 			else
 				throw new DMLRuntimeException("Relevant transformation metadata for column (id=" + id + ", name=" + columnNames[id-1] + ") is not found.");
 		}
-		//System.out.println("Number of columns in transformed data: " + ret);
+		
 		return ret;
 	}
 	
 	/**
 	 * Main method to create and/or apply transformation metdata using MapReduce.
 	 * 
-	 * @param jobinst
-	 * @param inputMatrices
-	 * @param shuffleInst
-	 * @param otherInst
-	 * @param resultIndices
-	 * @param outputMatrices
-	 * @param numReducers
-	 * @param replication
-	 * @return
-	 * @throws Exception
+	 * @param jobinst MR job instruction
+	 * @param inputs array of input matrices
+	 * @param shuffleInst shuffle instructions
+	 * @param otherInst other instructions
+	 * @param resultIndices byte array of result indices
+	 * @param outputs array of output matrices
+	 * @param numReducers number of reducers
+	 * @param replication ?
+	 * @return MR job result
+	 * @throws Exception if IOException occurs
 	 */
-	public static JobReturn mrDataTransform(MRJobInstruction jobinst, MatrixObject[] inputMatrices, String shuffleInst, String otherInst, byte[] resultIndices, MatrixObject[] outputMatrices, int numReducers, int replication) throws Exception {
+	public static JobReturn mrDataTransform(MRJobInstruction jobinst, MatrixObject[] inputs, String shuffleInst, String otherInst, byte[] resultIndices, MatrixObject[] outputs, int numReducers, int replication) throws Exception {
 		
 		String[] insts = shuffleInst.split(Instruction.INSTRUCTION_DELIM);
 		
 		// Parse transform instruction (the first instruction) to obtain relevant fields
-		TransformOperands oprnds = new TransformOperands(insts[0], inputMatrices[0]);
+		TransformOperands oprnds = new TransformOperands(insts[0], inputs[0]);
 		
 		JobConf job = new JobConf(ConfigurationManager.getCachedJobConf());
 		FileSystem fs = FileSystem.get(job);
 		
-		// find the first file in alphabetical ordering of partfiles in directory inputPath 
+		// find the first file in alphabetical ordering of part files in directory inputPath 
 		String smallestFile = CSVReblockMR.findSmallestFile(job, oprnds.inputPath);
 		
 		// find column names
@@ -740,10 +742,10 @@ public class DataTransform
 		ArrayList<Integer> bboutputs = new ArrayList<Integer>();
 		
 		// divide output objects based on output format (CSV or BinaryBlock)
-		for(int i=0; i < outputMatrices.length; i++) 
+		for(int i=0; i < outputs.length; i++) 
 		{
-			if(outputMatrices[i].getFileFormatProperties() != null 
-					&& outputMatrices[i].getFileFormatProperties().getFileFormat() == FileFormatProperties.FileFormat.CSV)
+			if(outputs[i].getFileFormatProperties() != null 
+					&& outputs[i].getFileFormatProperties().getFileFormat() == FileFormatProperties.FileFormat.CSV)
 				csvoutputs.add(i);
 			else
 				bboutputs.add(i);
@@ -752,7 +754,7 @@ public class DataTransform
 		boolean isBB  = (bboutputs.size()  > 0);
 		String tmpPath = MRJobConfiguration.constructTempOutputFilename();
 		
-		checkIfOutputOverlapsWithTxMtd(outputMatrices, oprnds, isCSV, isBB, csvoutputs, bboutputs, fs);
+		checkIfOutputOverlapsWithTxMtd(outputs, oprnds, isCSV, isBB, csvoutputs, bboutputs, fs);
 		
 		JobReturn retCSV = null, retBB = null;
 		
@@ -780,7 +782,7 @@ public class DataTransform
 			// Apply transformation metadata, and perform actual transformation 
 			if(isCSV)
 				retCSV = ApplyTfCSVMR.runJob(oprnds.inputPath, specWithIDs, oprnds.txMtdPath, tmpPath, 
-					outputMatrices[csvoutputs.get(0)].getFileName(), partOffsetsFile, 
+					outputs[csvoutputs.get(0)].getFileName(), partOffsetsFile, 
 					oprnds.inputCSVProperties, numColumns, replication, outHeader);
 			
 			if(isBB)
@@ -797,7 +799,7 @@ public class DataTransform
 					throw new DMLRuntimeException(ERROR_MSG_ZERO_ROWS);
 					
 				retBB = ApplyTfBBMR.runJob(oprnds.inputPath, insts[1], otherInst, 
-							specWithIDs, oprnds.txMtdPath, tmpPath, outputMatrices[bboutputs.get(0)].getFileName(), 
+							specWithIDs, oprnds.txMtdPath, tmpPath, outputs[bboutputs.get(0)].getFileName(), 
 							ret1.counterFile.toString(), oprnds.inputCSVProperties, numRowsTf, numColumns, 
 							numColumnsTf, replication, outHeader);
 			}
@@ -836,7 +838,7 @@ public class DataTransform
 					
 				// Apply transformation metadata, and perform actual transformation 
 				retCSV = ApplyTfCSVMR.runJob(oprnds.inputPath, specWithIDs, oprnds.applyTxPath, tmpPath, 
-							outputMatrices[csvoutputs.get(0)].getFileName(), ret1.counterFile.toString(), 
+							outputs[csvoutputs.get(0)].getFileName(), ret1.counterFile.toString(), 
 							oprnds.inputCSVProperties, numColumns, replication, outHeader);
 			}
 			
@@ -856,7 +858,7 @@ public class DataTransform
 				
 				// apply transformation metadata, as well as reblock the resulting data
 				retBB = ApplyTfBBMR.runJob(oprnds.inputPath, insts[1], otherInst, specWithIDs, 
-							oprnds.txMtdPath, tmpPath, outputMatrices[bboutputs.get(0)].getFileName(), 
+							oprnds.txMtdPath, tmpPath, outputs[bboutputs.get(0)].getFileName(), 
 							ret1.counterFile.toString(), oprnds.inputCSVProperties, ret1.rlens[0], 
 							ret1.clens[0], numColumnsTf, replication, outHeader);
 			}
@@ -875,7 +877,7 @@ public class DataTransform
 												oprnds.inputCSVProperties.getDelim(), // use the same header as the input
 												false, Double.NaN, null);
 			
-			MapReduceTool.writeMetaDataFile (outputMatrices[csvoutputs.get(0)].getFileName()+".mtd", 
+			MapReduceTool.writeMetaDataFile (outputs[csvoutputs.get(0)].getFileName()+".mtd", 
 												ValueType.DOUBLE, retCSV.getMatrixCharacteristics(0), 
 												OutputInfo.CSVOutputInfo, prop);
 			return retCSV;
@@ -885,7 +887,7 @@ public class DataTransform
 		{
 			retBB.getMatrixCharacteristics(0).setDimension(numRowsTf, numColumnsTf);
 			
-			MapReduceTool.writeMetaDataFile (outputMatrices[bboutputs.get(0)].getFileName()+".mtd", 
+			MapReduceTool.writeMetaDataFile (outputs[bboutputs.get(0)].getFileName()+".mtd", 
 					ValueType.DOUBLE, retBB.getMatrixCharacteristics(0), OutputInfo.BinaryBlockOutputInfo);
 			return retBB;
 		}
@@ -939,17 +941,17 @@ public class DataTransform
 		
 		if(oprnds.isApply)
 		{
-			BufferedReader br = new BufferedReader(new InputStreamReader( fs.open(new Path(oprnds.applyTxPath + "/" + TfUtils.TXMTD_COLNAMES)) ));
-			ret = br.readLine();
-			br.close();
+			try( BufferedReader br = new BufferedReader(new InputStreamReader( fs.open(new Path(oprnds.applyTxPath + "/" + TfUtils.TXMTD_COLNAMES)) )) ) {
+				ret = br.readLine();
+			}
 		}
 		else {
 			if ( oprnds.outNamesFile == null )
 				ret = headerLine;
 			else {
-				BufferedReader br = new BufferedReader(new InputStreamReader( fs.open(new Path(oprnds.outNamesFile)) ));
-				ret = br.readLine();
-				br.close();
+				try( BufferedReader br = new BufferedReader(new InputStreamReader( fs.open(new Path(oprnds.outNamesFile)) )) ) {
+					ret = br.readLine();
+				}
 			}
 		}
 		
@@ -960,29 +962,33 @@ public class DataTransform
 	 * Main method to create and/or apply transformation metdata in-memory, on a
 	 * single node.
 	 * 
-	 * @param inst
-	 * @param inputMatrices
-	 * @param outputMatrices
-	 * @return
-	 * @throws IOException
-	 * @throws DMLRuntimeException 
-	 * @throws JSONException 
-	 * @throws IllegalArgumentException 
+	 * @param inst parameterized built-in CP instruction
+	 * @param inputs array of input data
+	 * @param outputs array of output matrices
+	 * @return MR job result
+	 * @throws IOException if IOException occurs
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws JSONException if JSONException occurs
 	 */
-	public static JobReturn cpDataTransform(ParameterizedBuiltinCPInstruction inst, MatrixObject[] inputMatrices, MatrixObject[] outputMatrices) throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException {
-		TransformOperands oprnds = new TransformOperands(inst.getParameterMap(), inputMatrices[0]);
-		return cpDataTransform(oprnds, inputMatrices, outputMatrices);
+	public static JobReturn cpDataTransform(ParameterizedBuiltinCPInstruction inst, CacheableData<?>[] inputs, MatrixObject[] outputs) throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException {
+		TransformOperands oprnds = new TransformOperands(inst.getParameterMap(), inputs[0]);
+		return cpDataTransform(oprnds, inputs, outputs);
 	}
 
-	public static JobReturn cpDataTransform(String inst, MatrixObject[] inputMatrices, MatrixObject[] outputMatrices) throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException {
+	public static JobReturn cpDataTransform(String inst, CacheableData<?>[] inputs, MatrixObject[] outputs) 
+		throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException 
+	{
 		String[] insts = inst.split(Instruction.INSTRUCTION_DELIM);
 		// Parse transform instruction (the first instruction) to obtain relevant fields
-		TransformOperands oprnds = new TransformOperands(insts[0], inputMatrices[0]);
+		TransformOperands oprnds = new TransformOperands(insts[0], inputs[0]);
 		
-		return cpDataTransform(oprnds, inputMatrices, outputMatrices);
+		return cpDataTransform(oprnds, inputs, outputs);
 	}
 		
-	public static JobReturn cpDataTransform(TransformOperands oprnds, MatrixObject[] inputMatrices, MatrixObject[] outputMatrices) throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException {
+	public static JobReturn cpDataTransform(TransformOperands oprnds, CacheableData<?>[] inputs, MatrixObject[] outputs) 
+		throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException 
+	{
 		JobConf job = new JobConf(ConfigurationManager.getCachedJobConf());
 		FileSystem fs = FileSystem.get(job);
 		// find the first file in alphabetical ordering of partfiles in directory inputPath 
@@ -997,9 +1003,9 @@ public class DataTransform
 		ArrayList<Integer> bboutputs = new ArrayList<Integer>();
 		
 		// divide output objects based on output format (CSV or BinaryBlock)
-		for(int i=0; i < outputMatrices.length; i++) 
+		for(int i=0; i < outputs.length; i++) 
 		{
-			if(outputMatrices[i].getFileFormatProperties() != null && outputMatrices[i].getFileFormatProperties().getFileFormat() == FileFormatProperties.FileFormat.CSV)
+			if(outputs[i].getFileFormatProperties() != null && outputs[i].getFileFormatProperties().getFileFormat() == FileFormatProperties.FileFormat.CSV)
 				csvoutputs.add(i);
 			else
 				bboutputs.add(i);
@@ -1007,16 +1013,18 @@ public class DataTransform
 		boolean isCSV = (csvoutputs.size() > 0);
 		boolean isBB  = (bboutputs.size()  > 0);
 		
-		checkIfOutputOverlapsWithTxMtd(outputMatrices, oprnds, isCSV, isBB, csvoutputs, bboutputs, fs);
+		checkIfOutputOverlapsWithTxMtd(outputs, oprnds, isCSV, isBB, csvoutputs, bboutputs, fs);
 		
 		JobReturn ret = null;
 		
 		if (!oprnds.isApply) {
 			// build specification file with column IDs insteadof column names
-			String specWithIDs = processSpecFile(fs, oprnds.inputPath, smallestFile, colNamesToIds, oprnds.inputCSVProperties, oprnds.spec);
+			String specWithIDs = processSpecFile(fs, oprnds.inputPath, smallestFile, colNamesToIds, oprnds.inputCSVProperties, 
+					oprnds.spec);
 			MapReduceTool.writeStringToHDFS(specWithIDs, oprnds.txMtdPath + "/" + "spec.json");
 	
-			ret = performTransform(job, fs, oprnds.inputPath, colNamesToIds.size(), oprnds.inputCSVProperties, specWithIDs, oprnds.txMtdPath, oprnds.isApply, outputMatrices[0], outHeader, isBB, isCSV );
+			ret = performTransform(job, fs, oprnds.inputPath, colNamesToIds.size(), oprnds.inputCSVProperties, specWithIDs, 
+					oprnds.txMtdPath, oprnds.isApply, outputs[0], outHeader, isBB, isCSV );
 		}
 		else {
 			// copy given transform metadata (applyTxPath) to specified location (txMtdPath)
@@ -1027,49 +1035,8 @@ public class DataTransform
 			String specWithIDs = (oprnds.spec != null) ? 
 				oprnds.spec : MapReduceTool.readStringFromHDFSFile(oprnds.txMtdPath + "/" + "spec.json");
 			
-			ret = performTransform(job, fs, oprnds.inputPath, colNamesToIds.size(), oprnds.inputCSVProperties, specWithIDs,  oprnds.txMtdPath, oprnds.isApply, outputMatrices[0], outHeader, isBB, isCSV );
-		}
-		
-		return ret;
-	}
-	
-	/**
-	 * Apply given transform metadata (incl recode maps) over an in-memory frame input in order to
-	 * create a transformed numerical matrix. Note: The number of rows always remains unchanged, 
-	 * whereas the number of column might increase or decrease. 
-	 * 
-	 * @param params
-	 * @param input
-	 * @param meta
-	 * @param spec
-	 * @return
-	 * @throws DMLRuntimeException
-	 * @throws  
-	 */
-	public static MatrixBlock cpDataTransform(HashMap<String,String> params, FrameBlock input, FrameBlock meta) 
-		throws DMLRuntimeException
-	{
-		MatrixBlock ret = null;
-		
-		try
-		{
-			//initialize transform encoders
-			JSONObject spec = new JSONObject(params.get("spec"));
-			TfUtils agents = new TfUtils(spec, input.getNumColumns());		
-			agents.getRecodeAgent().initRecodeMaps(meta);
-			
-			//core transform apply over input frame and append to output
-			//FIXME number of output columns after encoder creation
-			ret = new MatrixBlock(input.getNumRows(), input.getNumColumns(), false);
-			Iterator<String[]> iter = input.getStringRowIterator();
-			for( int i=0; iter.hasNext(); i++ ) {
-				String[] tmp = agents.apply(iter.next(), true);
-				for( int j=0; j<tmp.length; j++ )
-					ret.appendValue(i, j, UtilFunctions.parseToDouble(tmp[j]));
-			}
-		}
-		catch(Exception ex) {
-			throw new DMLRuntimeException(ex);
+			ret = performTransform(job, fs, oprnds.inputPath, colNamesToIds.size(), oprnds.inputCSVProperties, specWithIDs,  
+					oprnds.txMtdPath, oprnds.isApply, outputs[0], outHeader, isBB, isCSV );
 		}
 		
 		return ret;
@@ -1079,11 +1046,11 @@ public class DataTransform
 	 * Helper function to fetch and sort the list of part files under the given
 	 * input directory.
 	 * 
-	 * @param input
-	 * @param fs
-	 * @return
-	 * @throws FileNotFoundException
-	 * @throws IOException
+	 * @param input input directory
+	 * @param fs file system
+	 * @return list of paths to input file parts
+	 * @throws FileNotFoundException if FileNotFoundException occurs
+	 * @throws IOException if IOException occurs
 	 */
 	@SuppressWarnings("unchecked")
 	private static ArrayList<Path> collectInputFiles(String input, FileSystem fs) throws FileNotFoundException, IOException 
@@ -1113,13 +1080,13 @@ public class DataTransform
 		{
 			for(int fileNo=0; fileNo<files.size(); fileNo++)
 			{
-				BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo))));
-				if(fileNo==0 && prop.hasHeader() ) 
-					br.readLine(); //ignore header
-				
-				while ( br.readLine() != null)
-					numRows++;
-				br.close();
+				try(BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo))))) {
+					if(fileNo==0 && prop.hasHeader() ) 
+						br.readLine(); //ignore header
+					
+					while ( br.readLine() != null)
+						numRows++;
+				}
 			}
 			numRowsTf = numRows;
 		}
@@ -1132,19 +1099,18 @@ public class DataTransform
 			
 			for(int fileNo=0; fileNo<files.size(); fileNo++)
 			{
-				BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo))));
-				if(fileNo==0 && prop.hasHeader() ) 
-					br.readLine(); //ignore header
-				
-				while ( (line=br.readLine()) != null)
-				{
-					numRows++;
-					
-					words = delim.split(line, -1);
-					if(!oa.omit(words, agents))
-						numRowsTf++;
+				try( BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo)))) ) {
+					if(fileNo==0 && prop.hasHeader() ) 
+						br.readLine(); //ignore header
+					while ( (line=br.readLine()) != null)
+					{
+						numRows++;
+						
+						words = delim.split(line, -1);
+						if(!oa.omit(words, agents))
+							numRowsTf++;
+					}
 				}
-				br.close();
 			}
 		}
 		
@@ -1157,21 +1123,23 @@ public class DataTransform
 	/**
 	 * Main method to create and/or apply transformation metdata in-memory, on a single node.
 	 * 
-	 * @param job
-	 * @param fs
-	 * @param inputPath
-	 * @param ncols
-	 * @param prop
-	 * @param specFileWithIDs
-	 * @param tfMtdPath
-	 * @param applyTxPath
-	 * @param isApply
-	 * @param outputPath
-	 * @param headerLine
-	 * @throws IOException
-	 * @throws DMLRuntimeException 
-	 * @throws JSONException 
-	 * @throws IllegalArgumentException 
+	 * @param job job configuration
+	 * @param fs file system
+	 * @param inputPath path to input files
+	 * @param ncols number of columns
+	 * @param prop csv file format properties
+	 * @param specWithIDs JSON transform specification with IDs
+	 * @param tfMtdPath transform metadata path
+	 * @param isApply ?
+	 * @param result output matrix
+	 * @param headerLine header line
+	 * @param isBB true if binary block
+	 * @param isCSV true if CSV
+	 * @return MR job result
+	 * @throws IOException if IOException occurs
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 * @throws IllegalArgumentException if IllegalArgumentException occurs
+	 * @throws JSONException if JSONException occurs
 	 */
 	private static JobReturn performTransform(JobConf job, FileSystem fs, String inputPath, int ncols, CSVFileFormatProperties prop, String specWithIDs, String tfMtdPath, boolean isApply, MatrixObject result, String headerLine, boolean isBB, boolean isCSV ) throws IOException, DMLRuntimeException, IllegalArgumentException, JSONException {
 		
@@ -1196,20 +1164,19 @@ public class DataTransform
 		String[] words  = null;
 		
 		int numColumnsTf=0;
-		BufferedReader br = null;
 		
 		if (!isApply) {
 			for(int fileNo=0; fileNo<files.size(); fileNo++)
 			{
-				br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo))));
-				if(fileNo==0 && prop.hasHeader() ) 
-					br.readLine(); //ignore header
-				
-				line = null;
-				while ( (line = br.readLine()) != null) {
-					agents.prepareTfMtd(line);
+				try(BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo)))) ) {
+					if(fileNo==0 && prop.hasHeader() ) 
+						br.readLine(); //ignore header
+					
+					line = null;
+					while ( (line = br.readLine()) != null) {
+						agents.prepareTfMtd(line);
+					}
 				}
-				br.close();
 			}
 			
 			if(agents.getValid() == 0) 
@@ -1227,7 +1194,7 @@ public class DataTransform
 			_ba.loadTxMtd(job, fs, tmp, agents);
 			
 			_da.setRecodeMapsCP( _ra.getCPRecodeMaps() );
-			_da.setNumBins(_ba.getBinList(), _ba.getNumBins());
+			_da.setNumBins(_ba.getColList(), _ba.getNumBins());
 			_da.loadTxMtd(job, fs, tmp, agents);
 		}
 		else {
@@ -1247,7 +1214,7 @@ public class DataTransform
 			_ba.loadTxMtd(job, fs, tmp, agents);
 			
 			_da.setRecodeMaps( _ra.getRecodeMaps() );
-			_da.setNumBins(_ba.getBinList(), _ba.getNumBins());
+			_da.setNumBins(_ba.getColList(), _ba.getNumBins());
 			_da.loadTxMtd(job, fs, tmp, agents);
 		}
 		
@@ -1261,75 +1228,79 @@ public class DataTransform
 		BufferedWriter out=new BufferedWriter(new OutputStreamWriter(fs.create(new Path(result.getFileName()),true)));		
 		StringBuilder sb = new StringBuilder();
 		
-		MatrixBlock mb = null; 
-		if ( isBB ) 
-		{
-			int estNNZ = (int)agents.getValid() * ncols;
-			mb = new MatrixBlock((int)agents.getValid(), numColumnsTf, estNNZ );
-			
-			if ( mb.isInSparseFormat() )
-				mb.allocateSparseRowsBlock();
-			else
-				mb.allocateDenseBlock();
-		}
-
-		int rowID = 0; // rowid to be used in filling the matrix block
-		
-		for(int fileNo=0; fileNo<files.size(); fileNo++)
-		{
-			br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo))));
-			if ( fileNo == 0 ) 
+		try {
+			MatrixBlock mb = null; 
+			if ( isBB ) 
 			{
-				if ( prop.hasHeader() )
-					br.readLine(); // ignore the header line from data file
+				int estNNZ = (int)agents.getValid() * ncols;
+				mb = new MatrixBlock((int)agents.getValid(), numColumnsTf, estNNZ );
 				
-				//TODO: fix hard-wired header propagation to meta data column names
-				
-				String dcdHeader = _da.constructDummycodedHeader(headerLine, agents.getDelim());
-				numColumnsTf = _da.genDcdMapsAndColTypes(fs, tfMtdPath, ncols, agents);
-				generateHeaderFiles(fs, tfMtdPath, headerLine, dcdHeader);
+				if ( mb.isInSparseFormat() )
+					mb.allocateSparseRowsBlock();
+				else
+					mb.allocateDenseBlock();
 			}
-			
-			line = null;
-			while ( (line = br.readLine()) != null) {
-				words = agents.getWords(line);
-
-				if(!agents.omit(words))
-				{
-					words = agents.apply(words, !isApply);
 	
-					if (isCSV)
+			int rowID = 0; // rowid to be used in filling the matrix block
+			
+			for(int fileNo=0; fileNo<files.size(); fileNo++)
+			{
+				try( BufferedReader br = new BufferedReader(new InputStreamReader(fs.open(files.get(fileNo)))) ) {
+					if ( fileNo == 0 ) 
 					{
-						out.write( agents.checkAndPrepOutputString(words, sb) );
-						out.write("\n");
+						if ( prop.hasHeader() )
+							br.readLine(); // ignore the header line from data file
+						
+						//TODO: fix hard-wired header propagation to meta data column names
+						
+						String dcdHeader = _da.constructDummycodedHeader(headerLine, agents.getDelim());
+						numColumnsTf = _da.genDcdMapsAndColTypes(fs, tfMtdPath, ncols, agents);
+						generateHeaderFiles(fs, tfMtdPath, headerLine, dcdHeader);
 					}
 					
-					if( isBB ) 
-					{
-						agents.check(words);
-						for(int c=0; c<words.length; c++)
+					line = null;
+					while ( (line = br.readLine()) != null) {
+						words = agents.getWords(line);
+		
+						if(!agents.omit(words))
 						{
-							if(words[c] == null || words[c].isEmpty())
-								;
-							else 
-								mb.appendValue(rowID, c, UtilFunctions.parseToDouble(words[c]));
+							words = agents.apply(words);
+			
+							if (isCSV)
+							{
+								out.write( agents.checkAndPrepOutputString(words, sb) );
+								out.write("\n");
+							}
+							
+							if( isBB ) 
+							{
+								agents.check(words);
+								for(int c=0; c<words.length; c++)
+								{
+									if(words[c] == null || words[c].isEmpty())
+										;
+									else 
+										mb.appendValue(rowID, c, UtilFunctions.parseToDouble(words[c]));
+								}
+							}
+							rowID++;
 						}
 					}
-					rowID++;
 				}
 			}
-			br.close();
-		}
-		out.close();
-		
-		if(mb != null)
-		{
-			mb.recomputeNonZeros();
-			mb.examSparsity();
 			
-			result.acquireModify(mb);
-			result.release();
-			result.exportData();
+			if(mb != null)
+			{
+				mb.recomputeNonZeros();
+				mb.examSparsity();
+				
+				result.acquireModify(mb);
+				result.release();
+				result.exportData();
+			}
+		}
+		finally {
+			IOUtilFunctions.closeSilently(out);
 		}
 		
 		MatrixCharacteristics mc = new MatrixCharacteristics(agents.getValid(), numColumnsTf, (int) result.getNumRowsPerBlock(), (int) result.getNumColumnsPerBlock());
@@ -1340,25 +1311,25 @@ public class DataTransform
 	
 	public static void generateHeaderFiles(FileSystem fs, String txMtdDir, String origHeader, String newHeader) throws IOException {
 		// write out given header line
-		Path pt=new Path(txMtdDir+"/" + TfUtils.TXMTD_COLNAMES);
-		BufferedWriter br=new BufferedWriter(new OutputStreamWriter(fs.create(pt,true)));
-		br.write(origHeader+"\n");
-		br.close();
+		try( BufferedWriter br=new BufferedWriter(new OutputStreamWriter(
+				fs.create(new Path(txMtdDir+"/" + TfUtils.TXMTD_COLNAMES),true)))) {
+			br.write(origHeader+"\n");
+		}
 
 		// write out the new header line (after all transformations)
-		pt = new Path(txMtdDir + "/" + TfUtils.TXMTD_DC_COLNAMES);
-		br=new BufferedWriter(new OutputStreamWriter(fs.create(pt,true)));
-		br.write(newHeader+"\n");
-		br.close();
+		try( BufferedWriter br=new BufferedWriter(new OutputStreamWriter(
+				fs.create(new Path(txMtdDir + "/" + TfUtils.TXMTD_DC_COLNAMES),true))) ){
+			br.write(newHeader+"\n");
+		}
 	}
 	
-	private static void checkIfOutputOverlapsWithTxMtd(MatrixObject[] outputMatrices, TransformOperands oprnds,
+	private static void checkIfOutputOverlapsWithTxMtd(MatrixObject[] outputs, TransformOperands oprnds,
 			boolean isCSV, boolean isBB, ArrayList<Integer> csvoutputs, ArrayList<Integer> bboutputs, FileSystem fs) throws DMLRuntimeException {
 		if(isCSV) {
-			checkIfOutputOverlapsWithTxMtd(oprnds.txMtdPath, outputMatrices[csvoutputs.get(0)].getFileName(), fs);
+			checkIfOutputOverlapsWithTxMtd(oprnds.txMtdPath, outputs[csvoutputs.get(0)].getFileName(), fs);
 		}
 		else if(isBB) {
-			checkIfOutputOverlapsWithTxMtd(oprnds.txMtdPath, outputMatrices[bboutputs.get(0)].getFileName(), fs);
+			checkIfOutputOverlapsWithTxMtd(oprnds.txMtdPath, outputs[bboutputs.get(0)].getFileName(), fs);
 		}
 	}
 	
@@ -1385,17 +1356,17 @@ public class DataTransform
 		}
 	}
 	
-	public static void spDataTransform(ParameterizedBuiltinSPInstruction inst, MatrixObject[] inputMatrices, MatrixObject[] outputMatrices, ExecutionContext ec) throws Exception {
+	public static void spDataTransform(ParameterizedBuiltinSPInstruction inst, FrameObject[] inputs, MatrixObject[] outputs, ExecutionContext ec) throws Exception {
 		
 		SparkExecutionContext sec = (SparkExecutionContext)ec;
 		
 		// Parse transform instruction (the first instruction) to obtain relevant fields
-		TransformOperands oprnds = new TransformOperands(inst.getParams(), inputMatrices[0]);
+		TransformOperands oprnds = new TransformOperands(inst.getParams(), inputs[0]);
 		
 		JobConf job = new JobConf();
 		FileSystem fs = FileSystem.get(job);
 		
-		checkIfOutputOverlapsWithTxMtd(oprnds.txMtdPath, outputMatrices[0].getFileName(), fs);
+		checkIfOutputOverlapsWithTxMtd(oprnds.txMtdPath, outputs[0].getFileName(), fs);
 		
 		// find the first file in alphabetical ordering of partfiles in directory inputPath 
 		String smallestFile = CSVReblockMR.findSmallestFile(job, oprnds.inputPath);
@@ -1410,7 +1381,7 @@ public class DataTransform
 		
 		// Construct RDD for input data
 		@SuppressWarnings("unchecked")
-		JavaPairRDD<LongWritable, Text> inputData = (JavaPairRDD<LongWritable, Text>) sec.getRDDHandleForMatrixObject(inputMatrices[0], InputInfo.CSVInputInfo);
+		JavaPairRDD<LongWritable, Text> inputData = (JavaPairRDD<LongWritable, Text>) sec.getRDDHandleForFrameObject(inputs[0], InputInfo.CSVInputInfo);
 		JavaRDD<Tuple2<LongWritable,Text>> csvLines = JavaPairRDD.toRDD(inputData).toJavaRDD();
 		
 		long numRowsTf=0, numColumnsTf=0;
@@ -1470,7 +1441,7 @@ public class DataTransform
 		
 		if ( outtfPairRDD != null ) 
 		{
-			MatrixObject outMO = outputMatrices[0];
+			MatrixObject outMO = outputs[0];
 			String outVar = outMO.getVarName();
 			outMO.setRDDHandle(new RDDObject(outtfPairRDD, outVar));
 			sec.addLineageRDD(outVar, inst.getParams().get("target"));
@@ -1496,9 +1467,9 @@ public class DataTransform
 		private boolean isApply=false;
 		private CSVFileFormatProperties inputCSVProperties = null;
 		
-		private TransformOperands(String inst, MatrixObject inputMatrix) {
-			inputPath = inputMatrix.getFileName();
-			inputCSVProperties = (CSVFileFormatProperties)inputMatrix.getFileFormatProperties();
+		private TransformOperands(String inst, CacheableData<?> input) {
+			inputPath = input.getFileName();
+			inputCSVProperties = (CSVFileFormatProperties)input.getFileFormatProperties();
 			String[] instParts = inst.split(Instruction.OPERAND_DELIM);
 			txMtdPath = instParts[3];
 			applyTxPath = instParts[4].startsWith("applymtd=") ? instParts[4].substring(9) : null;
@@ -1510,14 +1481,14 @@ public class DataTransform
 				outNamesFile = instParts[pos].startsWith("outnames=") ? instParts[pos].substring(9) : null;
 		}
 		
-		private TransformOperands(HashMap<String, String> params, MatrixObject inputMatrix) {
-			inputPath = inputMatrix.getFileName();
+		private TransformOperands(HashMap<String, String> params, CacheableData<?> input) {
+			inputPath = input.getFileName();
 			txMtdPath = params.get(ParameterizedBuiltinFunctionExpression.TF_FN_PARAM_MTD);
 			spec = params.get(ParameterizedBuiltinFunctionExpression.TF_FN_PARAM_SPEC);
 			applyTxPath = params.get(ParameterizedBuiltinFunctionExpression.TF_FN_PARAM_APPLYMTD);
 			isApply = (applyTxPath != null);
 			outNamesFile =  params.get(ParameterizedBuiltinFunctionExpression.TF_FN_PARAM_OUTNAMES); // can be null
-			inputCSVProperties = (CSVFileFormatProperties)inputMatrix.getFileFormatProperties();
+			inputCSVProperties = (CSVFileFormatProperties)input.getFileFormatProperties();
 		}
 	}
 }

@@ -36,6 +36,7 @@ import org.apache.sysml.lops.Lop;
 import org.apache.sysml.lops.LopProperties.ExecType;
 import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.lops.OutputParameters.Format;
+import org.apache.sysml.lops.PMMJ;
 import org.apache.sysml.lops.PartialAggregate.CorrectionLocationType;
 import org.apache.sysml.lops.ParameterizedBuiltin;
 import org.apache.sysml.lops.RepMat;
@@ -83,6 +84,12 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 
 	/**
 	 * Creates a new HOP for a function call
+	 * 
+	 * @param l ?
+	 * @param dt data type
+	 * @param vt value type
+	 * @param op the ParamBuiltinOp
+	 * @param inputParameters map of input parameters
 	 */
 	public ParameterizedBuiltinOp(String l, DataType dt, ValueType vt,
 			ParamBuiltinOp op, HashMap<String, Hop> inputParameters) {
@@ -109,6 +116,19 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 	public HashMap<String, Integer> getParamIndexMap(){
 		return _paramIndexMap;
 	}
+	
+	/**
+	 * Returns a parameters by its name. Returns null if not present  
+	 * @param val name
+	 * @return high-level operator
+	 */
+	public Hop getInputParameter(String val){
+		Integer index = getParamIndexMap().get(val);
+		if (index == null)
+			return null;
+		else
+			return getInput().get(index);
+	}
 		
 	@Override
 	public String getOpString() {
@@ -129,11 +149,9 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 		_outputPermutationMatrix = flag;
 	}
 	
-	public Hop getTargetHop()
-	{
-		Hop targetHop = getInput().get(_paramIndexMap.get("target"));
-		
-		return targetHop;
+	public Hop getTargetHop() {
+		return _paramIndexMap.containsKey("target") ?   
+			getInput().get(_paramIndexMap.get("target")) : null;
 	}
 	
 	@Override
@@ -196,7 +214,9 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 			case INVCDF: 
 			case REPLACE:
 			case TRANSFORMAPPLY: 
-			case TRANSFORMDECODE: { 
+			case TRANSFORMDECODE: 
+			case TRANSFORMMETA: 
+			case TOSTRING: {
 				ExecType et = optFindExecType();			
 				ParameterizedBuiltin pbilop = new ParameterizedBuiltin(inputlops,
 						HopsParameterizedBuiltinLops.get(_op), getDataType(), getValueType(), et);
@@ -406,13 +426,6 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 		}
 	}
 
-	/**
-	 * 
-	 * @param inputlops
-	 * @param et
-	 * @throws HopsException
-	 * @throws LopsException
-	 */
 	private void constructLopsRemoveEmpty(HashMap<String, Lop> inputlops, ExecType et) 
 		throws HopsException, LopsException 
 	{
@@ -499,11 +512,11 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				//step1: compute index vectors
 				Hop ppred0 = input;
 				if( !isPPredInput ) { //ppred only if required
-					ppred0 = new BinaryOp("tmp1", DataType.MATRIX, ValueType.DOUBLE, OpOp2.NOTEQUAL, input, new LiteralOp(0));
+					ppred0 = HopRewriteUtils.createBinary(input, new LiteralOp(0), OpOp2.NOTEQUAL);
 					HopRewriteUtils.updateHopCharacteristics(ppred0, brlen, bclen, memo, this);
 				}
 				
-				UnaryOp cumsum = new UnaryOp("tmp2", DataType.MATRIX, ValueType.DOUBLE, OpOp1.CUMSUM, ppred0); 
+				UnaryOp cumsum = HopRewriteUtils.createUnary(ppred0, OpOp1.CUMSUM); 
 				HopRewriteUtils.updateHopCharacteristics(cumsum, brlen, bclen, memo, this);
 			
 				Lop loutput = null;
@@ -511,14 +524,14 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				double mbudget = OptimizerUtils.getRemoteMemBudgetMap(true);
 				if( _outputPermutationMatrix && mest < mbudget ) //SPECIAL CASE: SELECTION VECTOR
 				{
-					BinaryOp sel = new BinaryOp("tmp3", DataType.MATRIX, ValueType.DOUBLE, OpOp2.MULT, ppred0, cumsum);
+					BinaryOp sel = HopRewriteUtils.createBinary(ppred0, cumsum, OpOp2.MULT);
 					HopRewriteUtils.updateHopCharacteristics(sel, brlen, bclen, memo, this);
 					loutput = sel.constructLops();
 				}
 				else //GENERAL CASE: GENERAL PERMUTATION MATRIX
 				{
 					//max ensures non-zero entries and at least one output row
-					BinaryOp max = new BinaryOp("tmp3", DataType.MATRIX, ValueType.DOUBLE, OpOp2.MAX, cumsum, new LiteralOp(1));
+					BinaryOp max = HopRewriteUtils.createBinary(cumsum, new LiteralOp(1), OpOp2.MAX);
 					HopRewriteUtils.updateHopCharacteristics(max, brlen, bclen, memo, this);
 					
 					DataGenOp seq = HopRewriteUtils.createSeqDataGenOp(input);
@@ -528,7 +541,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 					//step 2: compute removeEmpty(rows) output via table, seq guarantees right column dimension
 					//note: weights always the input (even if isPPredInput) because input also includes 0s
 					TernaryOp table = new TernaryOp("tmp5", DataType.MATRIX, ValueType.DOUBLE, OpOp3.CTABLE, max, seq, input);
-					HopRewriteUtils.setOutputBlocksizes(table, brlen, bclen);
+					table.setOutputBlocksizes(brlen, bclen);
 					table.refreshSizeInformation();
 					table.setForcedExecType(ExecType.MR); //force MR 
 					HopRewriteUtils.copyLineNumbers(this, table);
@@ -568,23 +581,18 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				
 				if(selectHop == null) {
 					//Step1: compute row/col non-empty indicators 
-					ppred0 = new BinaryOp("tmp1", DataType.MATRIX, ValueType.DOUBLE, OpOp2.NOTEQUAL, input, new LiteralOp(0));
-					HopRewriteUtils.setOutputBlocksizes(ppred0, brlen, bclen);
-					ppred0.refreshSizeInformation();
+					ppred0 = HopRewriteUtils.createBinary(input, new LiteralOp(0), OpOp2.NOTEQUAL);
 					ppred0.setForcedExecType(ExecType.MR); //always MR 
-					HopRewriteUtils.copyLineNumbers(this, ppred0);
 					
 					emptyInd = ppred0;
 					if( !((rmRows && clen == 1) || (!rmRows && rlen==1)) ){
-						emptyInd = new AggUnaryOp("tmp2", DataType.MATRIX, ValueType.DOUBLE, AggOp.MAX, rmRows?Direction.Row:Direction.Col, ppred0);
-						HopRewriteUtils.setOutputBlocksizes(emptyInd, brlen, bclen);
-						emptyInd.refreshSizeInformation();
+						emptyInd = HopRewriteUtils.createAggUnaryOp(ppred0, AggOp.MAX, rmRows?Direction.Row:Direction.Col);
 						emptyInd.setForcedExecType(ExecType.MR); //always MR
 						HopRewriteUtils.copyLineNumbers(this, emptyInd);
 					}
 				} else {
 					emptyInd = selectHop;
-					HopRewriteUtils.setOutputBlocksizes(emptyInd, brlen, bclen);
+					emptyInd.setOutputBlocksizes(brlen, bclen);
 					emptyInd.refreshSizeInformation();
 					emptyInd.setForcedExecType(ExecType.MR); //always MR
 					HopRewriteUtils.copyLineNumbers(this, emptyInd);
@@ -597,7 +605,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 					HopRewriteUtils.updateHopCharacteristics(cumsumInput, brlen, bclen, this);	
 				}
 			
-				UnaryOp cumsum = new UnaryOp("tmp3", DataType.MATRIX, ValueType.DOUBLE, OpOp1.CUMSUM, cumsumInput); 
+				UnaryOp cumsum = HopRewriteUtils.createUnary(cumsumInput, OpOp1.CUMSUM); 
 				HopRewriteUtils.updateHopCharacteristics(cumsum, brlen, bclen, this);
 			
 				Hop cumsumOutput = cumsum;
@@ -606,10 +614,10 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 					HopRewriteUtils.updateHopCharacteristics(cumsumOutput, brlen, bclen, this);	
 				}
 				
-				Hop maxDim = new AggUnaryOp("tmp4", DataType.SCALAR, ValueType.DOUBLE, AggOp.MAX, Direction.RowCol, cumsumOutput); //alternative: right indexing
+				Hop maxDim = HopRewriteUtils.createAggUnaryOp(cumsumOutput, AggOp.MAX, Direction.RowCol); //alternative: right indexing
 				HopRewriteUtils.updateHopCharacteristics(maxDim, brlen, bclen, this);
 				
-				BinaryOp offsets = new BinaryOp("tmp5", DataType.MATRIX, ValueType.DOUBLE, OpOp2.MULT, cumsumOutput, emptyInd);
+				BinaryOp offsets = HopRewriteUtils.createBinary(cumsumOutput, emptyInd, OpOp2.MULT);
 				HopRewriteUtils.updateHopCharacteristics(offsets, brlen, bclen, this);
 				
 				//Step 3: gather non-empty rows/cols into final results 
@@ -617,35 +625,56 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				Lop loffset = offsets.constructLops();
 				Lop lmaxdim = maxDim.constructLops();
 				
-				boolean requiresRep =   ((clen>bclen || clen<=0) &&  rmRows) 
-						             || ((rlen>brlen || rlen<=0) && !rmRows);
+				double mestPM = OptimizerUtils.estimatePartitionedSizeExactSparsity(rlen, 1, brlen, bclen, 1.0);
+				Lop rmEmpty = null;
 				
-				if( requiresRep ) {
-					Lop pos = createOffsetLop(input, rmRows); //ncol of left input (determines num replicates)
-					loffset = new RepMat(loffset, pos, rmRows, DataType.MATRIX, ValueType.DOUBLE);
-					loffset.getOutputParameters().setDimensions(rlen, clen, brlen, bclen, nnz);
-					setLineNumbers(loffset);
+				//a) broadcast-based PMM (permutation matrix mult)
+				if( rmRows && rlen > 0 && mestPM < OptimizerUtils.getRemoteMemBudgetMap() )
+				{
+					boolean needPart = !offsets.dimsKnown() || offsets.getDim1() > DistributedCacheInput.PARTITION_SIZE;
+					if( needPart ){ //requires partitioning
+						loffset = new DataPartition(loffset, DataType.MATRIX, ValueType.DOUBLE, (mestPM>OptimizerUtils.getLocalMemBudget())?ExecType.MR:ExecType.CP, PDataPartitionFormat.ROW_BLOCK_WISE_N);
+						loffset.getOutputParameters().setDimensions(rlen, 1, brlen, bclen, rlen);
+						setLineNumbers(loffset);	
+					}
+					
+					rmEmpty = new PMMJ(loffset, linput, lmaxdim, getDataType(), getValueType(), needPart, true, ExecType.MR);
+					setOutputDimensions(rmEmpty);
+					setLineNumbers(rmEmpty);
+				}
+				//b) general case: repartition-based rmempty
+				else
+				{
+					boolean requiresRep =   ((clen>bclen || clen<=0) &&  rmRows) 
+							             || ((rlen>brlen || rlen<=0) && !rmRows);
+					
+					if( requiresRep ) {
+						Lop pos = createOffsetLop(input, rmRows); //ncol of left input (determines num replicates)
+						loffset = new RepMat(loffset, pos, rmRows, DataType.MATRIX, ValueType.DOUBLE);
+						loffset.getOutputParameters().setDimensions(rlen, clen, brlen, bclen, nnz);
+						setLineNumbers(loffset);
+					}
+					
+					Group group1 = new Group(linput, Group.OperationTypes.Sort, getDataType(), getValueType());
+					setLineNumbers(group1);
+					group1.getOutputParameters().setDimensions(rlen, clen, brlen, bclen, nnz);
+				
+					Group group2 = new Group( loffset, Group.OperationTypes.Sort, getDataType(), getValueType());
+					setLineNumbers(group2);
+					group2.getOutputParameters().setDimensions(rlen, clen, brlen, bclen, nnz);
+				
+					HashMap<String, Lop> inMap = new HashMap<String, Lop>();
+					inMap.put("target", group1);
+					inMap.put("offset", group2);
+					inMap.put("maxdim", lmaxdim);
+					inMap.put("margin", inputlops.get("margin"));
+					
+					rmEmpty = new ParameterizedBuiltin(inMap, HopsParameterizedBuiltinLops.get(_op), getDataType(), getValueType(), et);			
+					setOutputDimensions(rmEmpty);
+					setLineNumbers(rmEmpty);
 				}
 				
-				Group group1 = new Group(linput, Group.OperationTypes.Sort, getDataType(), getValueType());
-				setLineNumbers(group1);
-				group1.getOutputParameters().setDimensions(rlen, clen, brlen, bclen, nnz);
-			
-				Group group2 = new Group( loffset, Group.OperationTypes.Sort, getDataType(), getValueType());
-				setLineNumbers(group2);
-				group2.getOutputParameters().setDimensions(rlen, clen, brlen, bclen, nnz);
-			
-				HashMap<String, Lop> inMap = new HashMap<String, Lop>();
-				inMap.put("target", group1);
-				inMap.put("offset", group2);
-				inMap.put("maxdim", lmaxdim);
-				inMap.put("margin", inputlops.get("margin"));
-				
-				ParameterizedBuiltin pbilop = new ParameterizedBuiltin(inMap, HopsParameterizedBuiltinLops.get(_op), getDataType(), getValueType(), et);			
-				setOutputDimensions(pbilop);
-				setLineNumbers(pbilop);
-			
-				Group group3 = new Group( pbilop, Group.OperationTypes.Sort, getDataType(), getValueType());
+				Group group3 = new Group( rmEmpty, Group.OperationTypes.Sort, getDataType(), getValueType());
 				setLineNumbers(group3);
 				group3.getOutputParameters().setDimensions(-1, -1, brlen, bclen, -1);
 				
@@ -679,23 +708,17 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 			
 			if(selectHop == null) {
 				//Step1: compute row/col non-empty indicators 
-				ppred0 = new BinaryOp("tmp1", DataType.MATRIX, ValueType.DOUBLE, OpOp2.NOTEQUAL, input, new LiteralOp(0));
-				HopRewriteUtils.setOutputBlocksizes(ppred0, brlen, bclen);
-				ppred0.refreshSizeInformation();
+				ppred0 = HopRewriteUtils.createBinary(input, new LiteralOp(0), OpOp2.NOTEQUAL);
 				ppred0.setForcedExecType(ExecType.SPARK); //always Spark
-				HopRewriteUtils.copyLineNumbers(this, ppred0);
 				
 				emptyInd = ppred0;
 				if( !((rmRows && clen == 1) || (!rmRows && rlen==1)) ){
-					emptyInd = new AggUnaryOp("tmp2", DataType.MATRIX, ValueType.DOUBLE, AggOp.MAX, rmRows?Direction.Row:Direction.Col, ppred0);
-					HopRewriteUtils.setOutputBlocksizes(emptyInd, brlen, bclen);
-					emptyInd.refreshSizeInformation();
+					emptyInd = HopRewriteUtils.createAggUnaryOp(ppred0, AggOp.MAX, rmRows?Direction.Row:Direction.Col);
 					emptyInd.setForcedExecType(ExecType.SPARK); //always Spark
-					HopRewriteUtils.copyLineNumbers(this, emptyInd);
 				}
 			} else {
 				emptyInd = selectHop;
-				HopRewriteUtils.setOutputBlocksizes(emptyInd, brlen, bclen);
+				emptyInd.setOutputBlocksizes(brlen, bclen);
 				emptyInd.refreshSizeInformation();
 				emptyInd.setForcedExecType(ExecType.SPARK); //always Spark
 				HopRewriteUtils.copyLineNumbers(this, emptyInd);
@@ -708,7 +731,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				HopRewriteUtils.updateHopCharacteristics(cumsumInput, brlen, bclen, this);
 			}
 		
-			UnaryOp cumsum = new UnaryOp("tmp3", DataType.MATRIX, ValueType.DOUBLE, OpOp1.CUMSUM, cumsumInput); 
+			UnaryOp cumsum = HopRewriteUtils.createUnary(cumsumInput, OpOp1.CUMSUM); 
 			HopRewriteUtils.updateHopCharacteristics(cumsum, brlen, bclen, this);
 		
 			Hop cumsumOutput = cumsum;
@@ -717,10 +740,10 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				HopRewriteUtils.updateHopCharacteristics(cumsumOutput, brlen, bclen, this);	
 			}
 			
-			Hop maxDim = new AggUnaryOp("tmp4", DataType.SCALAR, ValueType.DOUBLE, AggOp.MAX, Direction.RowCol, cumsumOutput); //alternative: right indexing
+			Hop maxDim = HopRewriteUtils.createAggUnaryOp(cumsumOutput, AggOp.MAX, Direction.RowCol); //alternative: right indexing
 			HopRewriteUtils.updateHopCharacteristics(maxDim, brlen, bclen, this);
 			
-			BinaryOp offsets = new BinaryOp("tmp5", DataType.MATRIX, ValueType.DOUBLE, OpOp2.MULT, cumsumOutput, emptyInd);
+			BinaryOp offsets = HopRewriteUtils.createBinary(cumsumOutput, emptyInd, OpOp2.MULT);
 			HopRewriteUtils.updateHopCharacteristics(offsets, brlen, bclen, this);
 			
 			//Step 3: gather non-empty rows/cols into final results 
@@ -750,14 +773,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 			//NOTE: in contrast to mr, replication and aggregation handled instruction-local
 		}
 	}
-	
-	/**
-	 * 
-	 * @param inputlops
-	 * @param et
-	 * @throws HopsException
-	 * @throws LopsException
-	 */
+
 	private void constructLopsRExpand(HashMap<String, Lop> inputlops, ExecType et) 
 		throws HopsException, LopsException 
 	{
@@ -786,25 +802,104 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 			setLops(finalagg);
 		}
 	}
-	
-	
-	@Override
-	public void printMe() throws HopsException {
-		if (LOG.isDebugEnabled()){
-			if (getVisited() != VisitStatus.DONE) {
-				super.printMe();
-				LOG.debug(" " + _op);
-			}
-
-			setVisited(VisitStatus.DONE);
-		}
-	}
 
 	@Override
 	protected double computeOutputMemEstimate( long dim1, long dim2, long nnz )
 	{	
-		double sparsity = OptimizerUtils.getSparsity(dim1, dim2, nnz);
-		return OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, sparsity);	
+		if (getOp() == ParamBuiltinOp.TOSTRING){
+			// Conservative Assumptions about characteristics of digits
+			final long AVERAGE_CHARS_PER_VALUE = 7;
+			final long AVERAGE_CHARS_PER_INDEX = 4;
+			
+			// Default Values for toString
+			long specifiedRows = 100;
+			long specifiedCols = 100;
+			boolean sparsePrint = false;
+			String sep = " ";
+			String linesep = "\n";
+			
+			Hop rowsHop = getInputParameter("rows");
+			Hop colsHop = getInputParameter("cols");
+			Hop sparsePrintHOP = getInputParameter("sparse");
+			Hop sepHop = getInputParameter("sep");
+			Hop linesepHop = getInputParameter("linesep");
+			
+			long numNonZeroes = getInput().get(0).getNnz();
+			if (numNonZeroes < 0)
+				numNonZeroes = specifiedRows * specifiedCols;
+			long numRows = getInput().get(0).getDim1();
+			if (numRows < 0) 	// If number of rows is not known, set to default
+				numRows = specifiedRows;
+			long numCols = getInput().get(0).getDim2();
+			if (numCols < 0)	// If number of columns is not known, set to default
+				numCols = specifiedCols;
+			
+			
+			// Assume Defaults : 100 * 100, sep = " ", linesep = "\n", sparse = false
+			// String size in bytes is 36 + number_of_chars * 2
+			final long DEFAULT_SIZE = 36 + 2 *
+					(100 * 100 * AVERAGE_CHARS_PER_VALUE 	// Length for digits  
+					+ 1 * 100 * 99 							// Length for separator chars
+					+ 1* 100) ;								// Length for line separator chars
+			
+			try {
+			
+				if (rowsHop != null && rowsHop instanceof LiteralOp) {
+					specifiedRows = ((LiteralOp)rowsHop).getLongValue();
+				}
+				numRows = numRows < specifiedRows ? numRows : specifiedRows;
+				if (colsHop != null && colsHop instanceof LiteralOp){
+					specifiedCols = ((LiteralOp)colsHop).getLongValue();
+				}
+				numCols = numCols < specifiedCols ? numCols : specifiedCols;
+				
+				if (sparsePrintHOP != null && sparsePrintHOP instanceof LiteralOp){
+					sparsePrint = ((LiteralOp)sparsePrintHOP).getBooleanValue();
+				}
+				
+				if (sepHop != null && sepHop instanceof LiteralOp){
+					sep = ((LiteralOp)sepHop).getStringValue();
+				}
+				
+				if (linesepHop != null && linesepHop instanceof LiteralOp){
+					linesep = ((LiteralOp)linesepHop).getStringValue();
+				}
+				
+				long numberOfChars = -1;
+				
+				if (sparsePrint){
+					numberOfChars = AVERAGE_CHARS_PER_VALUE * numNonZeroes			// Length for value digits
+									+ AVERAGE_CHARS_PER_INDEX * 2L * numNonZeroes	// Length for row & column index
+									+ sep.length() * 2L * numNonZeroes				// Length for separator chars
+									+ linesep.length() * numNonZeroes;				// Length for line separator chars
+				} else {
+					numberOfChars = AVERAGE_CHARS_PER_VALUE * numRows * numCols 	// Length for digits
+									+ sep.length() * numRows * (numCols - 1) 		// Length for separator chars
+									+ linesep.length() * numRows;					// Length for line separator chars
+				}
+				
+				/*
+				 * For JVM
+				 * 8 + // object header used by the VM
+				 * 8 + // 64-bit reference to char array (value)
+				 * 8 + string.length() * 2 + // character array itself (object header + 16-bit chars)
+				 * 4 + // offset integer
+				 * 4 + // count integer
+				 * 4 + // cached hash code
+				 */
+				
+				return (36 + numberOfChars * 2);
+				
+			} catch (HopsException e){
+				LOG.warn("Invalid values when trying to compute dims1, dims2 & nnz", e);
+				
+				return DEFAULT_SIZE;
+			}
+			
+		} else {
+			double sparsity = OptimizerUtils.getSparsity(dim1, dim2, nnz);
+			return OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, sparsity);
+		}
 	}
 	
 	@Override
@@ -856,11 +951,11 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 	@Override
 	protected long[] inferOutputCharacteristics( MemoTable memo )
 	{
-		//CDF always known because 
+		//Notes: CDF, TOSTRING always known because scalar outputs
 		
 		long[] ret = null;
 	
-		Hop input = getInput().get(_paramIndexMap.get("target"));	
+		Hop input = getTargetHop();	
 		MatrixCharacteristics mc = memo.getAllInputStats(input);
 
 		if( _op == ParamBuiltinOp.GROUPEDAGG ) 
@@ -935,8 +1030,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 			Hop dir = getInput().get(_paramIndexMap.get("dir"));
 			double maxVal = HopRewriteUtils.getDoubleValueSafe((LiteralOp)max);
 			String dirVal = ((LiteralOp)dir).getStringValue();
-			if( mc.dimsKnown() )
-			{
+			if( mc.dimsKnown() ) {
 				long lnnz = mc.nnzKnown() ? mc.getNonZeros() : mc.getRows();
 				if( "cols".equals(dirVal) ) { //expand horizontally
 					ret = new long[]{mc.getRows(), UtilFunctions.toLong(maxVal), lnnz};
@@ -944,6 +1038,20 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				else if( "rows".equals(dirVal) ){ //expand vertically
 					ret = new long[]{UtilFunctions.toLong(maxVal), mc.getRows(), lnnz};
 				}	
+			}
+		}
+		else if( _op == ParamBuiltinOp.TRANSFORMDECODE ) {
+			if( mc.dimsKnown() ) {
+				//rows: remain unchanged
+				//cols: dummy coding might decrease never increase cols 
+				return new long[]{mc.getRows(), mc.getCols(), mc.getRows()*mc.getCols()};
+			}
+		}
+		else if( _op == ParamBuiltinOp.TRANSFORMAPPLY ) {
+			if( mc.dimsKnown() ) {
+				//rows: omitting might decrease but never increase rows
+				//cols: dummy coding and binning might increase cols but nnz stays constant
+				return new long[]{mc.getRows(), mc.getCols(), mc.getRows()*mc.getCols()};
 			}
 		}
 		
@@ -972,10 +1080,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 		{
 			if( _op == ParamBuiltinOp.TRANSFORM ) {
 				// force remote, at runtime cp transform triggered for small files.
-				return REMOTE;
-			}
-			else if( _op == ParamBuiltinOp.TRANSFORMAPPLY ) {
-				return ExecType.CP;
+				return (_etype = REMOTE);
 			}
 			
 			if ( OptimizerUtils.isMemoryBasedOptLevel() ) {
@@ -993,6 +1098,15 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 			
 			//check for valid CP dimensions and matrix size
 			checkAndSetInvalidCPDimsAndSize();
+		}
+		
+		//force CP for in-memory only transform builtins
+		if( (_op == ParamBuiltinOp.TRANSFORMAPPLY && REMOTE==ExecType.MR)
+			|| _op == ParamBuiltinOp.TRANSFORMDECODE && REMOTE==ExecType.MR
+			|| _op == ParamBuiltinOp.TRANSFORMMETA 
+			|| _op == ParamBuiltinOp.TOSTRING 
+			|| _op == ParamBuiltinOp.CDF || _op == ParamBuiltinOp.INVCDF) {
+			_etype = ExecType.CP;
 		}
 		
 		//mark for recompile (forever)
@@ -1073,9 +1187,20 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 				
 				break;	
 			}
-			case TRANSFORMAPPLY: {
+			case TRANSFORMDECODE: {
 				Hop target = getInput().get(_paramIndexMap.get("target"));
-				setDim1( target.getDim1() ); //rows remain unchanged
+				//rows remain unchanged for recoding and dummy coding
+				setDim1( target.getDim1() );
+				//cols remain unchanged only if no dummy coding
+				//TODO parse json spec
+				break;
+			}
+			
+			case TRANSFORMAPPLY: {
+				//rows remain unchanged only if no omitting
+				//cols remain unchanged of no dummy coding 
+				//TODO parse json spec
+				break;
 			}
 			default:
 				//do nothing
@@ -1128,11 +1253,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 		
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	@Override
 	public boolean isTransposeSafe()
 	{
@@ -1154,11 +1275,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 		
 		return ret;	
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	public boolean isCountFunction()
 	{
 		boolean ret = false;
@@ -1182,7 +1299,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 	
 	/**
 	 * Only applies to REPLACE.
-	 * @return
+	 * @return true if non-zero replace arguments
 	 */
 	private boolean isNonZeroReplaceArguments()
 	{
@@ -1204,11 +1321,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 		
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	public boolean isTargetDiagInput()
 	{
 		Hop targetHop = getTargetHop();
@@ -1221,7 +1334,7 @@ public class ParameterizedBuiltinOp extends Hop implements MultiThreadedHop
 
 	/**
 	 * This will check if there is sufficient memory locally (twice the size of second matrix, for original and sort data), and remotely (size of second matrix (sorted data)).  
-	 * @return
+	 * @return true if sufficient memory locally
 	 */
 	private boolean isRemoveEmptyBcSP()	// TODO find if 2 x size needed. 
 	{

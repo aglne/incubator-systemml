@@ -35,7 +35,6 @@ import org.apache.sysml.hops.OptimizerUtils.OptimizationLevel;
 import org.apache.sysml.lops.Lop;
 import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.Program;
 import org.apache.sysml.runtime.controlprogram.ProgramBlock;
 import org.apache.sysml.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
@@ -50,13 +49,6 @@ public class DMLAppMasterUtils
 	private static ResourceConfig _rc = null;
 	private static HashMap<ProgramBlock, Long> _rcMap = null;
 	
-
-	/**
-	 * 
-	 * @param conf
-	 * @param appId
-	 * @return
-	 */
 	public static String constructHDFSWorkingDir(DMLConfig conf, ApplicationId appId)
 	{
 		StringBuilder sb = new StringBuilder();
@@ -66,12 +58,7 @@ public class DMLAppMasterUtils
 		sb.append( Lop.FILE_SEPARATOR );
 		return sb.toString();	
 	}
-	
-	/**
-	 * 
-	 * @param conf
-	 * @throws DMLRuntimeException 
-	 */
+
 	public static void setupConfigRemoteMaxMemory(DMLConfig conf) 
 		throws DMLRuntimeException
 	{
@@ -109,18 +96,9 @@ public class DMLAppMasterUtils
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param prog
-	 * @throws DMLRuntimeException
-	 * @throws HopsException
-	 * @throws LopsException
-	 * @throws DMLUnsupportedOperationException
-	 * @throws IOException
-	 */
+
 	public static void setupProgramMappingRemoteMaxMemory(Program prog) 
-		throws DMLRuntimeException, HopsException, LopsException, DMLUnsupportedOperationException, IOException
+		throws DMLRuntimeException, HopsException, LopsException, IOException
 	{
 		if( DMLScript.isActiveAM() && isResourceOptimizerEnabled() )
 		{
@@ -133,11 +111,7 @@ public class DMLAppMasterUtils
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @param sb
-	 */
+
 	public static void setupProgramBlockRemoteMaxMemory(ProgramBlock pb)
 	{
 		if( DMLScript.isActiveAM() && isResourceOptimizerEnabled() )
@@ -151,12 +125,7 @@ public class DMLAppMasterUtils
 			}
 		}	
 	}
-	
-	/**
-	 * 
-	 * @param job
-	 * @param conf
-	 */
+
 	public static void setupMRJobRemoteMaxMemory(JobConf job, DMLConfig conf)
 	{
 		if( DMLScript.isActiveAM() && conf.getBooleanValue(DMLConfig.YARN_APPMASTER) )
@@ -183,24 +152,13 @@ public class DMLAppMasterUtils
 			}
 		}
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	public static boolean isResourceOptimizerEnabled()
 	{
 		return ( DMLYarnClientProxy.RESOURCE_OPTIMIZER
 				|| OptimizerUtils.isOptLevel(OptimizationLevel.O3_LOCAL_RESOURCE_TIME_MEMORY) );
 	}
-	
 
-	/**
-	 * 
-	 * @param args
-	 * @return
-	 * @throws DMLException
-	 */
 	protected static ArrayList<ProgramBlock> getRuntimeProgramBlocks(Program prog) 
 		throws DMLRuntimeException
 	{			
@@ -211,11 +169,7 @@ public class DMLAppMasterUtils
 		
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * @param cc
-	 */
+
 	protected static void setupRemoteParallelTasks( YarnClusterConfig cc )
 	{
 		int pmap = (int) cc.getNumCores();

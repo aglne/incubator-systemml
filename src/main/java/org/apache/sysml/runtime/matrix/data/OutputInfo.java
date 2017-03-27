@@ -24,13 +24,14 @@ import java.io.Serializable;
 
 import org.apache.hadoop.io.DoubleWritable;
 import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.OutputFormat;
 import org.apache.hadoop.mapred.SequenceFileOutputFormat;
 import org.apache.hadoop.mapred.TextOutputFormat;
-
+import org.apache.sysml.parser.DataExpression;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.matrix.mapred.CSVWriteReducer.RowBlockForTextOutput;
 import org.apache.sysml.runtime.matrix.sort.CompactOutputFormat;
@@ -59,8 +60,10 @@ public class OutputInfo implements Serializable
 			NullWritable.class, Text.class);
 	public static final OutputInfo BinaryCellOutputInfo=new OutputInfo(SequenceFileOutputFormat.class, 
 			MatrixIndexes.class, MatrixCell.class);
-	public static final OutputInfo BinaryBlockOutputInfo=new OutputInfo(SequenceFileOutputFormat.class, 
-			MatrixIndexes.class, MatrixBlock.class);
+	public static final OutputInfo BinaryBlockOutputInfo=new OutputInfo(
+			SequenceFileOutputFormat.class, MatrixIndexes.class, MatrixBlock.class);
+	public static final OutputInfo BinaryBlockFrameOutputInfo=new OutputInfo(
+			SequenceFileOutputFormat.class, LongWritable.class, FrameBlock.class);
 	public static final OutputInfo OutputInfoForSortInput=new OutputInfo(SequenceFileOutputFormat.class, 
 			DoubleWritable.class, IntWritable.class);
 	public static final OutputInfo OutputInfoForSortOutput = new OutputInfo(CompactOutputFormat.class,
@@ -90,7 +93,7 @@ public class OutputInfo implements Serializable
 		else 
 			throw new DMLRuntimeException("Unrecognized output info: " + oi);
 	}
-
+		
 	public static OutputInfo stringToOutputInfo (String str) {
 		if ( str.equalsIgnoreCase("textcell")) {
 			return TextCellOutputInfo;
@@ -136,6 +139,21 @@ public class OutputInfo implements Serializable
 			return "csv";
 		else
 			throw new DMLRuntimeException("Unrecognized outputInfo: " + oi);
+	}
+
+	public static String outputInfoToStringExternal(OutputInfo oinfo) 
+	{
+		if( oinfo == OutputInfo.TextCellOutputInfo )
+			return DataExpression.FORMAT_TYPE_VALUE_TEXT;
+		else if( oinfo == OutputInfo.MatrixMarketOutputInfo )
+			return DataExpression.FORMAT_TYPE_VALUE_MATRIXMARKET;
+		else if( oinfo == OutputInfo.CSVOutputInfo )
+			return DataExpression.FORMAT_TYPE_VALUE_CSV;
+		else if( oinfo == OutputInfo.BinaryBlockOutputInfo 
+				|| oinfo == OutputInfo.BinaryCellOutputInfo )
+			return DataExpression.FORMAT_TYPE_VALUE_BINARY;
+		else
+			return "specialized";
 	}
 	
 	@Override

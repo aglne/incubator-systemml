@@ -25,7 +25,6 @@ import java.util.HashMap;
 
 import org.apache.sysml.lops.MMTSJ.MMTSJType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.mr.AggregateBinaryInstruction;
 import org.apache.sysml.runtime.instructions.mr.AggregateInstruction;
 import org.apache.sysml.runtime.instructions.mr.AggregateUnaryInstruction;
@@ -142,11 +141,15 @@ public class MatrixCharacteristics implements Serializable
 		numColumnsPerBlock = bclen;
 	} 
 	
-	public long getNumRowBlocks(){
+	public long getNumBlocks() {
+		return getNumRowBlocks() * getNumColBlocks();
+	}
+	
+	public long getNumRowBlocks() {
 		return (long) Math.ceil((double)getRows() / getRowsPerBlock());
 	}
 	
-	public long getNumColBlocks(){
+	public long getNumColBlocks() {
 		return (long) Math.ceil((double)getCols() / getColsPerBlock());
 	}
 	
@@ -156,14 +159,16 @@ public class MatrixCharacteristics implements Serializable
 		+", blocks ("+numRowsPerBlock+" x "+numColumnsPerBlock+")]";
 	}
 	
-	public void setDimension(long nr, long nc)
-	{
+	public void setDimension(long nr, long nc) {
 		numRows = nr;
 		numColumns = nc;
 	}
 	
-	public void setBlockSize(int bnr, int bnc)
-	{
+	public void setBlockSize(int blen) {
+		setBlockSize(blen, blen);
+	}
+	
+	public void setBlockSize(int bnr, int bnc) {
 		numRowsPerBlock = bnr;
 		numColumnsPerBlock = bnc;
 	}
@@ -204,27 +209,26 @@ public class MatrixCharacteristics implements Serializable
 	}
 	
 	public static void reorg(MatrixCharacteristics dim, ReorgOperator op, 
-			MatrixCharacteristics dimOut) throws DMLUnsupportedOperationException, DMLRuntimeException
+			MatrixCharacteristics dimOut) throws DMLRuntimeException
 	{
 		op.fn.computeDimension(dim, dimOut);
 	}
 	
 	public static void aggregateUnary(MatrixCharacteristics dim, AggregateUnaryOperator op, 
-			MatrixCharacteristics dimOut) throws DMLUnsupportedOperationException, DMLRuntimeException
+			MatrixCharacteristics dimOut) throws DMLRuntimeException
 	{
 		op.indexFn.computeDimension(dim, dimOut);
 	}
 	
 	public static void aggregateBinary(MatrixCharacteristics dim1, MatrixCharacteristics dim2,
 			AggregateBinaryOperator op, MatrixCharacteristics dimOut) 
-	throws DMLUnsupportedOperationException
 	{
 		//set dimension
 		dimOut.set(dim1.numRows, dim2.numColumns, dim1.numRowsPerBlock, dim2.numColumnsPerBlock);
 	}
 	
 	public static void computeDimension(HashMap<Byte, MatrixCharacteristics> dims, MRInstruction ins) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		MatrixCharacteristics dimOut=dims.get(ins.output);
 		if(dimOut==null)

@@ -34,7 +34,6 @@ import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.lops.compile.Dag;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.ExternalFunctionProgramBlock;
 import org.apache.sysml.runtime.controlprogram.ExternalFunctionProgramBlockCP;
 import org.apache.sysml.runtime.controlprogram.ForProgramBlock;
@@ -47,7 +46,6 @@ import org.apache.sysml.runtime.controlprogram.WhileProgramBlock;
 import org.apache.sysml.runtime.controlprogram.parfor.ProgramConverter;
 import org.apache.sysml.runtime.instructions.CPInstructionParser;
 import org.apache.sysml.runtime.instructions.Instruction;
-
 
 
 public class DMLProgram 
@@ -64,17 +62,12 @@ public class DMLProgram
 		_blocks = new ArrayList<StatementBlock>();
 		_functionBlocks = new HashMap<String,FunctionStatementBlock>();
 		_namespaces = new HashMap<String,DMLProgram>();
-		_namespaces.put(DMLProgram.DEFAULT_NAMESPACE,this);
 	}
 	
 	public HashMap<String,DMLProgram> getNamespaces(){
 		return _namespaces;
 	}
-	
-	public void addStatementBlock(StatementBlock b, int pos) {
-		_blocks.add(pos,b) ;
-	}
-	
+
 	public void addStatementBlock(StatementBlock b){
 		_blocks.add(b);
 	}
@@ -83,6 +76,17 @@ public class DMLProgram
 		return _blocks.size();
 	}
 
+	/**
+	 * 
+	 * @param fkey   function key as concatenation of namespace and function name 
+	 *               (see DMLProgram.constructFunctionKey)
+	 * @return function statement block
+	 */
+	public FunctionStatementBlock getFunctionStatementBlock(String fkey) {
+		String[] tmp = splitFunctionKey(fkey);
+		return getFunctionStatementBlock(tmp[0], tmp[1]);
+	}
+	
 	public FunctionStatementBlock getFunctionStatementBlock(String namespaceKey, String functionName) {
 		DMLProgram namespaceProgram = this.getNamespaces().get(namespaceKey);
 		if (namespaceProgram == null)
@@ -96,11 +100,19 @@ public class DMLProgram
 	public HashMap<String, FunctionStatementBlock> getFunctionStatementBlocks(String namespaceKey) throws LanguageException{
 		DMLProgram namespaceProgram = this.getNamespaces().get(namespaceKey);
 		if (namespaceProgram == null){
-			LOG.error("ERROR: namespace " + namespaceKey + " is underfined");
-			throw new LanguageException("ERROR: namespace " + namespaceKey + " is underfined");
+			LOG.error("ERROR: namespace " + namespaceKey + " is undefined");
+			throw new LanguageException("ERROR: namespace " + namespaceKey + " is undefined");
 		}
 		// for the namespace DMLProgram, get the functions in its current namespace
 		return namespaceProgram._functionBlocks;
+	}
+	
+	public boolean hasFunctionStatementBlocks() {
+		boolean ret = false;
+		for( DMLProgram nsProg : _namespaces.values() )
+			ret |= !nsProg._functionBlocks.isEmpty();
+		
+		return ret;
 	}
 	
 	public ArrayList<FunctionStatementBlock> getFunctionStatementBlocks() 
@@ -134,10 +146,6 @@ public class DMLProgram
 	
 	public StatementBlock getStatementBlock(int i){
 		return _blocks.get(i);
-	}
-	
-	public void setStatementBlock(int i, StatementBlock sb) {
-		 _blocks.set(i, sb);
 	}
 
 	public void mergeStatementBlocks(){
@@ -175,7 +183,7 @@ public class DMLProgram
 	}
 	
 	
-	public Program getRuntimeProgram(DMLConfig config) throws IOException, LanguageException, DMLRuntimeException, LopsException, DMLUnsupportedOperationException {
+	public Program getRuntimeProgram(DMLConfig config) throws IOException, LanguageException, DMLRuntimeException, LopsException {
 		
 		// constructor resets the set of registered functions
 		Program rtprog = new Program();
@@ -204,19 +212,8 @@ public class DMLProgram
 		return rtprog ;
 	}
 	
-	/**
-	 * 
-	 * @param prog
-	 * @param sb
-	 * @param config
-	 * @return
-	 * @throws IOException
-	 * @throws LopsException
-	 * @throws DMLRuntimeException
-	 * @throws DMLUnsupportedOperationException
-	 */
 	public ProgramBlock createRuntimeProgramBlock(Program prog, StatementBlock sb, DMLConfig config) 
-		throws IOException, LopsException, DMLRuntimeException, DMLUnsupportedOperationException 
+		throws IOException, LopsException, DMLRuntimeException 
 	{
 		Dag<Lop> dag = null; 
 		Dag<Lop> pred_dag = null;
@@ -571,7 +568,7 @@ public class DMLProgram
 	 * are cleaned after execution anyway.
 	 * (3) As an alternative to doing rule 2, we could also check for existing objects in createvar and function invocation
 	 * (or generic at program block level) and remove objects of previous iterations accordingly (but objects of last iteration
-	 * would still require seperate cleanup).
+	 * would still require separate cleanup).
 	 * 
 	 * TODO: MB: external function invocations should become hops/lops as well (see instruction gen in DMLTranslator), 
 	 * (currently not possible at Hops/Lops level due the requirement of multiple outputs for functions) 
@@ -583,11 +580,10 @@ public class DMLProgram
 	 * @param pb
 	 * @return
 	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
 	 */
 	@SuppressWarnings("unused")
 	private ProgramBlock verifyAndCorrectProgramBlock(VariableSet in, VariableSet out, VariableSet kill, ProgramBlock pb) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{	
 		//RULE 1: if in IN and not in OUT, then there should be an rmvar or rmfilevar inst
 		//(currently required for specific cases of external functions)
@@ -642,7 +638,7 @@ public class DMLProgram
 	}
 	
 	private Instruction createCleanupInstruction(String varName) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException
+		throws DMLRuntimeException
 	{
 		//(example "CP+Lops.OPERAND_DELIMITOR+rmvar+Lops.OPERAND_DELIMITOR+Var7")
 		StringBuilder sb = new StringBuilder();
@@ -661,9 +657,9 @@ public class DMLProgram
 	 * Determines if the given program block includes a RMVAR or RMFILEVAR
 	 * instruction for the given varName.
 	 * 
-	 * @param pb
-	 * @param varName
-	 * @return
+	 * @param pb program block
+	 * @param varName variable name
+	 * @return true if program block contains remove instruction for variable
 	 */
 	private boolean rContainsRMInstruction(ProgramBlock pb, String varName)
 	{	
@@ -718,9 +714,9 @@ public class DMLProgram
 	 * the list of instructions, while for complex program blocks it is added to
 	 * the end of the list of exit instructions.
 	 * 
-	 * @param pb
-	 * @param inst
-	 * @throws DMLRuntimeException 
+	 * @param pb program block
+	 * @param inst instruction
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	private void addCleanupInstruction( ProgramBlock pb, Instruction inst ) 
 		throws DMLRuntimeException
@@ -761,22 +757,11 @@ public class DMLProgram
 		}
 	}
 	
-	/**
-	 * 
-	 * @param fnamespace
-	 * @param fname
-	 * @return
-	 */
 	public static String constructFunctionKey(String fnamespace, String fname)
 	{
 		return fnamespace + Program.KEY_DELIM + fname;
 	}
 	
-	/**
-	 * 
-	 * @param fkey
-	 * @return
-	 */
 	public static String[] splitFunctionKey(String fkey)
 	{
 		return fkey.split(Program.KEY_DELIM);

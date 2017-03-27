@@ -210,11 +210,11 @@ public class SeqParReadTest extends AutomatedTestBase {
 	
 	private void runReadTypeFormatSparsitySizeTest(boolean parallel, OutputInfo fmt, boolean dense, boolean big ) {
 		
-		boolean oldpar = CompilerConfig.FLAG_PARREAD_TEXT;
+		boolean oldpar = CompilerConfig.FLAG_PARREADWRITE_TEXT;
 
 		try
 		{
-			CompilerConfig.FLAG_PARREAD_TEXT = parallel;
+			CompilerConfig.FLAG_PARREADWRITE_TEXT = parallel;
 			
 			TestConfiguration config = getTestConfiguration(TEST_NAME);
 			loadTestConfiguration(config);
@@ -250,7 +250,7 @@ public class SeqParReadTest extends AutomatedTestBase {
 		}
 		finally
 		{
-			CompilerConfig.FLAG_PARREAD_TEXT = oldpar;		
+			CompilerConfig.FLAG_PARREADWRITE_TEXT = oldpar;		
 		}
 	}
 	
@@ -270,8 +270,7 @@ public class SeqParReadTest extends AutomatedTestBase {
 	private void writeMatrix( double[][] A, String fname, OutputInfo oi, long rows, long cols, int brows, int bcols, long nnz ) 
 		throws DMLRuntimeException, IOException
 	{
-		MapReduceTool.deleteFileIfExistOnHDFS(fname);
-		MapReduceTool.deleteFileIfExistOnHDFS(fname+".mtd");
+		MapReduceTool.deleteFileWithMTDIfExistOnHDFS(fname);
 		
 		MatrixCharacteristics mc = new MatrixCharacteristics(rows, cols, brows, bcols, nnz);
 		MatrixBlock mb = DataConverter.convertToMatrixBlock(A);

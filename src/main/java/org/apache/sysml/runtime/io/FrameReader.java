@@ -21,9 +21,7 @@ package org.apache.sysml.runtime.io;
 
 import java.io.EOFException;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.LinkedList;
-import java.util.List;
 
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -33,6 +31,7 @@ import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
 import org.apache.sysml.runtime.util.MapReduceTool;
+import org.apache.sysml.runtime.util.UtilFunctions;
 
 /**
  * Base class for all format-specific frame readers. Every reader is required to implement the basic 
@@ -43,81 +42,36 @@ import org.apache.sysml.runtime.util.MapReduceTool;
  */
 public abstract class FrameReader 
 {
-	/**
-	 * 
-	 * @param fname
-	 * @param schema
-	 * @param names
-	 * @param rlen
-	 * @param clen
-	 * @return
-	 */
-	public abstract FrameBlock readFrameFromHDFS( String fname, List<ValueType> schema, List<String> names,
-			long rlen, long clen)
+
+	public abstract FrameBlock readFrameFromHDFS( String fname, ValueType[] schema, String[] names, long rlen, long clen)
 		throws IOException, DMLRuntimeException;
-	
-	/**
-	 * 
-	 * @param fname
-	 * @param schema
-	 * @param rlen
-	 * @param clen
-	 * @return
-	 */
-	public FrameBlock readFrameFromHDFS( String fname, List<ValueType> schema, long rlen, long clen )
+
+	public FrameBlock readFrameFromHDFS( String fname, ValueType[] schema, long rlen, long clen )
 		throws IOException, DMLRuntimeException
 	{
-		return readFrameFromHDFS(fname, schema, getDefColNames(schema.size()), rlen, clen);
+		return readFrameFromHDFS(fname, schema, getDefColNames(schema.length), rlen, clen);
 	}
-	
-	/**
-	 * 
-	 * @param fname
-	 * @param rlen
-	 * @param clen
-	 * @return
-	 */
+
 	public FrameBlock readFrameFromHDFS( String fname, long rlen, long clen )
 		throws IOException, DMLRuntimeException
 	{
 		return readFrameFromHDFS(fname, getDefSchema(clen), getDefColNames(clen), rlen, clen);
 	}
-	
-	/**
-	 * 
-	 * @param iNumColumns
-	 * @return
-	 */
-	public List<ValueType> getDefSchema( long lNumColumns )
+
+	public ValueType[] getDefSchema( long clen )
 		throws IOException, DMLRuntimeException
 	{
-		List<ValueType> schema = new ArrayList<ValueType>();
-		for (int i=0; i < lNumColumns; ++i)
-			schema.add(ValueType.STRING);
-		return schema;
+		int lclen = Math.max((int)clen, 1);
+		return UtilFunctions.nCopies(lclen, ValueType.STRING);
 	}
 
-	/**
-	 * 
-	 * @param iNumColumns
-	 * @return
-	 */
-	public List<String> getDefColNames( long lNumColumns )
+	public String[] getDefColNames( long clen )
 		throws IOException, DMLRuntimeException
 	{
-		List<String> colNames = new ArrayList<String>();
-		for (int i=0; i < lNumColumns; ++i)
-			colNames.add("C"+i);
-		return colNames;
+		return (clen < 0) ? new String[0] : 
+			FrameBlock.createColNames((int)clen);
 	}
 
-	/**
-	 * 
-	 * @param fs
-	 * @param file
-	 * @return
-	 * @throws IOException
-	 */
 	public static Path[] getSequenceFilePaths( FileSystem fs, Path file ) 
 		throws IOException
 	{
@@ -144,13 +98,14 @@ public abstract class FrameReader
 	 * NOTE: mallocDense controls if the output matrix blocks is fully allocated, this can be redundant
 	 * if binary block read and single block. 
 	 * 
-	 * @param schema
-	 * @param names
-	 * @return
-	 * @throws DMLRuntimeException 
-	 * @throws IOException 
+	 * @param schema schema as array of ValueTypes
+	 * @param names column names
+	 * @param nrow number of rows
+	 * @return frame block
+	 * @throws IOException if IOException occurs
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
-	protected static FrameBlock createOutputFrameBlock(List<ValueType> schema, List<String> names, long nrow)
+	protected static FrameBlock createOutputFrameBlock(ValueType[] schema, String[] names, long nrow)
 		throws IOException, DMLRuntimeException
 	{
 		//check schema and column names
@@ -162,13 +117,19 @@ public abstract class FrameReader
 		ret.ensureAllocatedColumns((int)nrow);
 		return ret;
 	}
-	
-	/**
-	 * 
-	 * @param fs
-	 * @param path
-	 * @throws IOException 
-	 */
+
+	protected static ValueType[] createOutputSchema(ValueType[] schema, long ncol) {
+		if( schema.length==1 && ncol > 1 )
+			return UtilFunctions.nCopies((int)ncol, schema[0]);
+		return schema;
+	}
+
+	protected static String[] createOutputNames(String[] names, long ncol) {
+		if( names.length != ncol )
+			return FrameBlock.createColNames((int)ncol);
+		return names;
+	}
+
 	protected static void checkValidInputFile(FileSystem fs, Path path) 
 		throws IOException
 	{
@@ -178,7 +139,6 @@ public abstract class FrameReader
 	
 		//check for empty file
 		if( MapReduceTool.isFileEmpty( fs, path.toString() ) )
-			throw new EOFException("Empty input file "+ path.toString() +".");
-		
+			throw new EOFException("Empty input file "+ path.toString() +".");		
 	}
 }

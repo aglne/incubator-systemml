@@ -20,7 +20,6 @@
 package org.apache.sysml.udf;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.context.ExecutionContext;
 import org.apache.sysml.runtime.instructions.Instruction;
 
@@ -35,6 +34,8 @@ public class ExternalFunctionInvocationInstruction extends Instruction
 	
 	public static final String ELEMENT_DELIM = ":";
 	
+	public String _namespace;
+	public String _functionName;
 	protected String className; // name of class that contains the function
 	protected String configFile; // optional configuration file parameter
 	protected String inputParams; // string representation of input parameters
@@ -75,7 +76,7 @@ public class ExternalFunctionInvocationInstruction extends Instruction
 
 	@Override
 	public void processInstruction(ExecutionContext ec)
-			throws DMLRuntimeException, DMLUnsupportedOperationException 
+			throws DMLRuntimeException 
 	{
 		//do nothing (not applicable because this instruction is only used as
 		//meta data container)

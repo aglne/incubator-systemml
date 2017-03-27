@@ -23,7 +23,6 @@ import java.util.ArrayList;
 
 import org.apache.sysml.lops.MMTSJ.MMTSJType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
@@ -31,11 +30,6 @@ import org.apache.sysml.runtime.matrix.mapred.CachedValueMap;
 import org.apache.sysml.runtime.matrix.mapred.IndexedMatrixValue;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 
-
-/**
- * 
- * 
- */
 public class MMTSJMRInstruction extends UnaryInstruction
 {	
 	
@@ -49,22 +43,12 @@ public class MMTSJMRInstruction extends UnaryInstruction
 		
 		_type = type;
 	}
-	
-	/**
-	 * 
-	 * @return
-	 */
+
 	public MMTSJType getMMTSJType()
 	{
 		return _type;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static MMTSJMRInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -86,7 +70,7 @@ public class MMTSJMRInstruction extends UnaryInstruction
 	public void processInstruction(Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue,
 			IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{		
 		ArrayList<IndexedMatrixValue> blkList = cachedValues.get(input);
 		if( blkList !=null )
@@ -109,7 +93,7 @@ public class MMTSJMRInstruction extends UnaryInstruction
 				if( in instanceof MatrixBlock && out instanceof MatrixBlock )
 					((MatrixBlock) in).transposeSelfMatrixMultOperations((MatrixBlock)out, _type );
 				else
-					throw new DMLUnsupportedOperationException("Types "+in.getClass()+" and "+out.getClass()+" incompatible with "+MatrixBlock.class);
+					throw new DMLRuntimeException("Types "+in.getClass()+" and "+out.getClass()+" incompatible with "+MatrixBlock.class);
 				
 				//put the output value in the cache
 				if(iout==tempValue)

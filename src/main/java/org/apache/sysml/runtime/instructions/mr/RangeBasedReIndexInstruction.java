@@ -22,7 +22,6 @@ package org.apache.sysml.runtime.instructions.mr;
 import java.util.ArrayList;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
@@ -51,12 +50,7 @@ public class RangeBasedReIndexInstruction extends UnaryMRInstructionBase
 		_rlenLhs = rlen;
 		_clenLhs = clen;
 	}
-	
-	/**
-	 * 
-	 * @param mcIn
-	 * @param mcOut
-	 */
+
 	public void computeOutputCharacteristics(MatrixCharacteristics mcIn, MatrixCharacteristics mcOut) {
 		if( _forLeft )
 			mcOut.set(_rlenLhs, _clenLhs, mcIn.getRowsPerBlock(), mcIn.getColsPerBlock(), -1);
@@ -64,13 +58,7 @@ public class RangeBasedReIndexInstruction extends UnaryMRInstructionBase
 			mcOut.set(_ixrange.rowEnd-_ixrange.rowStart+1, _ixrange.colEnd-_ixrange.colStart+1, 
 					mcIn.getRowsPerBlock(), mcIn.getColsPerBlock(), -1);
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static RangeBasedReIndexInstruction parseInstruction( String str ) 
 		throws DMLRuntimeException 
 	{	
@@ -99,7 +87,7 @@ public class RangeBasedReIndexInstruction extends UnaryMRInstructionBase
 	public void processInstruction(Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue,
 			IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{		
 		if(input==output)
 			throw new DMLRuntimeException("input cannot be the same for output for "+instString);

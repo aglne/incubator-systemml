@@ -21,6 +21,8 @@ package org.apache.sysml.parser.common;
 
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
@@ -40,7 +42,6 @@ import org.apache.sysml.parser.DoubleIdentifier;
 import org.apache.sysml.parser.Expression;
 import org.apache.sysml.parser.Expression.DataOp;
 import org.apache.sysml.parser.FunctionCallIdentifier;
-import org.apache.sysml.parser.IndexedIdentifier;
 import org.apache.sysml.parser.IntIdentifier;
 import org.apache.sysml.parser.LanguageException;
 import org.apache.sysml.parser.MultiAssignmentStatement;
@@ -51,8 +52,6 @@ import org.apache.sysml.parser.PrintStatement;
 import org.apache.sysml.parser.RelationalExpression;
 import org.apache.sysml.parser.Statement;
 import org.apache.sysml.parser.StringIdentifier;
-import org.apache.sysml.parser.common.CustomErrorListener;
-import org.apache.sysml.parser.dml.DmlParser.BuiltinFunctionExpressionContext;
 import org.apache.sysml.parser.dml.DmlSyntacticValidator;
 import org.apache.sysml.parser.pydml.PydmlSyntacticValidator;
 
@@ -64,16 +63,28 @@ public abstract class CommonSyntacticValidator {
 	protected final CustomErrorListener errorListener;
 	protected final String currentFile;
 	protected String _workingDir = ".";   //current working directory
-	protected HashMap<String,String> argVals = null;
+	protected Map<String,String> argVals = null;
+	protected String sourceNamespace = null;
+	// Track imported scripts to prevent infinite recursion
+	protected static ThreadLocal<HashMap<String, String>> _scripts = new ThreadLocal<HashMap<String, String>>() {
+		@Override protected HashMap<String, String> initialValue() { return new HashMap<String, String>(); }
+	};
+	// Map namespaces to full paths as defined only from source statements in this script (i.e., currentFile)
+	protected HashMap<String, String> sources;
+	// Names of new internal and external functions defined in this script (i.e., currentFile)
+	protected Set<String> functions;
+	
+	public static void init() {
+		_scripts.get().clear();
+	}
 
-	public CommonSyntacticValidator(CustomErrorListener errorListener, HashMap<String,String> argVals) {
+	public CommonSyntacticValidator(CustomErrorListener errorListener, Map<String,String> argVals, String sourceNamespace, Set<String> prepFunctions) {
 		this.errorListener = errorListener;
 		currentFile = errorListener.getCurrentFileName();
 		this.argVals = argVals;
-	}
-
-	protected void notifyErrorListeners(String message, int line, int charPositionInLine) {
-		errorListener.validationError(line, charPositionInLine, message);
+		this.sourceNamespace = sourceNamespace;
+		sources = new HashMap<String, String>();
+		functions = (null != prepFunctions) ? prepFunctions : new HashSet<String>();
 	}
 
 	protected void notifyErrorListeners(String message, Token op) {
@@ -84,10 +95,29 @@ public abstract class CommonSyntacticValidator {
 		errorListener.validationWarning(op.getLine(), op.getCharPositionInLine(), message);
 	}
 
-	// Different namespaces for DML (::) and PyDml (.)
+	/**
+	 * Obtain the namespace separator ({@code ::} for DML and {@code .} for
+	 * PYDML) that is used to specify a namespace and a function in that
+	 * namespace.
+	 * 
+	 * @return The namespace separator
+	 */
 	public abstract String namespaceResolutionOp();
 
-	// Returns list of two elements <namespace, function names>, else null
+	/**
+	 * Obtain the namespace and the function name as a two-element array based
+	 * on the fully-qualified function name. If no namespace is supplied in
+	 * front of the function name, the default namespace will be used.
+	 * 
+	 * @param fullyQualifiedFunctionName
+	 *            Namespace followed by separator ({@code ::} for DML and
+	 *            {@code .} for PYDML) followed by function name (for example,
+	 *            {@code mynamespace::myfunctionname}), or only function name if
+	 *            the default namespace is used (for example,
+	 *            {@code myfunctionname}).
+	 * @return Two-element array consisting of namespace and function name, or
+	 *         {@code null}.
+	 */
 	protected String[] getQualifiedNames(String fullyQualifiedFunctionName) {
 		String splitStr = Pattern.quote(namespaceResolutionOp());
 		String [] fnNames = fullyQualifiedFunctionName.split(splitStr);
@@ -98,7 +128,7 @@ public abstract class CommonSyntacticValidator {
 			functionName = fnNames[0].trim();
 		}
 		else if(fnNames.length == 2) {
-			namespace = fnNames[0].trim();
+			namespace = getQualifiedNamespace(fnNames[0].trim());
 			functionName = fnNames[1].trim();
 		}
 		else
@@ -109,19 +139,20 @@ public abstract class CommonSyntacticValidator {
 		retVal[1] = functionName;
 		return retVal;
 	}
+	
+	protected String getQualifiedNamespace(String namespace) {
+		String path = sources.get(namespace);
+		return (path != null && path.length() > 0) ? path : namespace;
+	}
 
-	protected boolean validateBuiltinFunctions(String function) {
-		String functionName = function.replaceAll(" ", "").trim();
-		if(functionName.equals("write") || functionName.equals(DMLProgram.DEFAULT_NAMESPACE + namespaceResolutionOp() + "write")) {
-			return validateBuiltinWriteFunction(function);
+	protected void validateNamespace(String namespace, String filePath, ParserRuleContext ctx) {
+		if (!sources.containsKey(namespace)) {
+			sources.put(namespace, filePath);
 		}
-		return true;
+		else {
+			notifyErrorListeners("Namespace Conflict: '" + namespace + "' already defined as " + sources.get(namespace), ctx.start);
+		}
 	}
-
-	protected boolean validateBuiltinWriteFunction(String function) {
-		return true;
-	}
-
 
 	protected void setFileLineColumn(Expression expr, ParserRuleContext ctx) {
 		String txt = ctx.getText();
@@ -273,16 +304,41 @@ public abstract class CommonSyntacticValidator {
 		}
 	}
 
-	protected void constStringIdExpressionHelper(ParserRuleContext ctx, ExpressionInfo me) {
-		String val = "";
-		String text = ctx.getText();
-		if(	(text.startsWith("\"") && text.endsWith("\"")) ||
-			(text.startsWith("\'") && text.endsWith("\'"))) {
-			if(text.length() > 2) {
-				val = text.substring(1, text.length()-1);
+	protected String extractStringInQuotes(String text, boolean inQuotes) {
+		String val = null;
+		if(inQuotes) {
+			if(	(text.startsWith("\"") && text.endsWith("\"")) ||
+				(text.startsWith("\'") && text.endsWith("\'"))) {
+				if(text.length() > 2) {
+					val = text.substring(1, text.length()-1)
+						.replaceAll("\\\\b","\b")
+						.replaceAll("\\\\t","\t")
+						.replaceAll("\\\\n","\n")
+						.replaceAll("\\\\f","\f")
+						.replaceAll("\\\\r","\r")
+						.replace("\\'","'")
+						.replace("\\\"","\"");
+				}
+				else if(text.equals("\"\"") || text.equals("\'\'")) {
+					val = "";
+				}
 			}
 		}
 		else {
+			val = text.replaceAll("\\\\b","\b")
+					.replaceAll("\\\\t","\t")
+					.replaceAll("\\\\n","\n")
+					.replaceAll("\\\\f","\f")
+					.replaceAll("\\\\r","\r")
+					.replace("\\'","'")
+					.replace("\\\"","\"");
+		}
+		return val;
+	}
+	
+	protected void constStringIdExpressionHelper(ParserRuleContext ctx, ExpressionInfo me) {
+		String val = extractStringInQuotes(ctx.getText(), true);
+		if(val == null) {
 			notifyErrorListeners("incorrect string literal ", ctx.start);
 			return;
 		}
@@ -302,74 +358,15 @@ public abstract class CommonSyntacticValidator {
 
 	protected void exitDataIdExpressionHelper(ParserRuleContext ctx, ExpressionInfo me, ExpressionInfo dataInfo) {
 		me.expr = dataInfo.expr;
-		int line = ctx.start.getLine();
-		int col = ctx.start.getCharPositionInLine();
-		me.expr.setAllPositions(currentFile, line, col, line, col);
-		setFileLineColumn(me.expr, ctx);
-	}
-
-	protected void exitIndexedExpressionHelper(ParserRuleContext ctx, String name, ExpressionInfo dataInfo,
-			ExpressionInfo rowLower, ExpressionInfo rowUpper, ExpressionInfo colLower, ExpressionInfo colUpper) {
-		dataInfo.expr = new IndexedIdentifier(name, false, false);
-		setFileLineColumn(dataInfo.expr, ctx);
-		boolean isRowLower = rowLower != null;
-		boolean isRowUpper = rowUpper != null;
-		boolean isColLower = colLower != null;
-		boolean isColUpper = colUpper != null;
-		try {
-			ArrayList< ArrayList<Expression> > exprList = new ArrayList< ArrayList<Expression> >();
-
-			ArrayList<Expression> rowIndices = new ArrayList<Expression>();
-			ArrayList<Expression> colIndices = new ArrayList<Expression>();
-
-
-			if(!isRowLower && !isRowUpper) {
-				// both not set
-				rowIndices.add(null); rowIndices.add(null);
-			}
-			else if(isRowLower && isRowUpper) {
-				// both set
-				rowIndices.add(incrementByOne(rowLower.expr, ctx));
-				rowIndices.add(rowUpper.expr);
-			}
-			else if(isRowLower && !isRowUpper) {
-				// only row set
-				rowIndices.add(incrementByOne(rowLower.expr, ctx));
-			}
-			else {
-				notifyErrorListeners("incorrect index expression for row", ctx.start);
-				return;
-			}
-
-			if(!isColLower && !isColUpper) {
-				// both not set
-				colIndices.add(null); colIndices.add(null);
-			}
-			else if(isColLower && isColUpper) {
-				colIndices.add(incrementByOne(colLower.expr, ctx));
-				colIndices.add(colUpper.expr);
-			}
-			else if(isColLower && !isColUpper) {
-				colIndices.add(incrementByOne(colLower.expr, ctx));
-			}
-			else {
-				notifyErrorListeners("incorrect index expression for column", ctx.start);
-				return;
-			}
-			exprList.add(rowIndices);
-			exprList.add(colIndices);
-			((IndexedIdentifier) dataInfo.expr).setIndices(exprList);
+		// If "The parameter $X either needs to be passed through commandline or initialized to default value" validation
+		// error occurs, then dataInfo.expr is null which would cause a null pointer exception with the following code.
+		// Therefore, check for null so that parsing can continue so all parsing issues can be determined.
+		if (me.expr != null) {
+			int line = ctx.start.getLine();
+			int col = ctx.start.getCharPositionInLine();
+			me.expr.setAllPositions(currentFile, line, col, line, col);
+			setFileLineColumn(me.expr, ctx);
 		}
-		catch(Exception e) {
-			notifyErrorListeners("cannot set the indices", ctx.start);
-			return;
-		}
-	}
-
-	private Expression incrementByOne(Expression expr, ParserRuleContext ctx) {
-		// For maintaining semantic consistency, we have decided to keep 1-based indexing
-		// If in future, PyDML becomes more popular than DML, this can be switched.
-		return expr;
 	}
 
 	protected ConstIdentifier getConstIdFromString(String varValue, Token start) {
@@ -411,12 +408,12 @@ public abstract class CommonSyntacticValidator {
 		String text = varValue;
 		if(	(text.startsWith("\"") && text.endsWith("\"")) || (text.startsWith("\'") && text.endsWith("\'"))) {
 			if(text.length() > 2) {
-				val = text.substring(1, text.length()-1);
+				val = extractStringInQuotes(text, true);
 			}
 		}
 		else {
 			// the commandline parameters can be passed without any quotes
-			val = varValue;
+			val = extractStringInQuotes(text, false);
 		}
 		return new StringIdentifier(val, currentFile, linePosition, charPosition, linePosition, charPosition);
 	}
@@ -431,13 +428,13 @@ public abstract class CommonSyntacticValidator {
 
 		String varValue = null;
 		for(Map.Entry<String, String> arg : this.argVals.entrySet()) {
-			if(arg.getKey().trim().equals(varName)) {
+			if(arg.getKey().equals(varName)) {
 				if(varValue != null) {
 					notifyErrorListeners("multiple values passed for the parameter " + varName + " via commandline", start);
 					return;
 				}
 				else {
-					varValue = arg.getValue().trim();
+					varValue = arg.getValue();
 				}
 			}
 		}
@@ -448,7 +445,7 @@ public abstract class CommonSyntacticValidator {
 
 		// Command line param cannot be empty string
 		// If you want to pass space, please quote it
-		if(varValue.trim().equals(""))
+		if(varValue.equals(""))
 			return;
 
 		dataInfo.expr = getConstIdFromString(varValue, start);
@@ -490,30 +487,64 @@ public abstract class CommonSyntacticValidator {
 
 	protected void setPrintStatement(ParserRuleContext ctx, String functionName,
 			ArrayList<ParameterExpression> paramExpression, StatementInfo thisinfo) {
-		if(paramExpression.size() != 1) {
-			notifyErrorListeners(functionName + "() has only one parameter", ctx.start);
+		int numParams = paramExpression.size();
+		if (numParams == 0) {
+			notifyErrorListeners(functionName + "() must have more than 0 parameters", ctx.start);
 			return;
-		}
-		Expression expr = paramExpression.get(0).getExpr();
-		if(expr == null) {
-			notifyErrorListeners("cannot process " + functionName + "() function", ctx.start);
-			return;
-		}
-		try {
-			int line = ctx.start.getLine();
-			int col = ctx.start.getCharPositionInLine();
-			thisinfo.stmt = new PrintStatement(functionName, expr, line, col, line, col);
-			setFileLineColumn(thisinfo.stmt, ctx);
-		} catch (LanguageException e) {
-			notifyErrorListeners("cannot process " + functionName + "() function", ctx.start);
-			return;
+		} else if (numParams == 1) {
+			Expression expr = paramExpression.get(0).getExpr();
+			if(expr == null) {
+				notifyErrorListeners("cannot process " + functionName + "() function", ctx.start);
+				return;
+			}
+			try {
+				int line = ctx.start.getLine();
+				int col = ctx.start.getCharPositionInLine();
+				ArrayList<Expression> expList = new ArrayList<Expression>();
+				expList.add(expr);
+				thisinfo.stmt = new PrintStatement(functionName, expList, line, col, line, col);
+				setFileLineColumn(thisinfo.stmt, ctx);
+			} catch (LanguageException e) {
+				notifyErrorListeners("cannot process " + functionName + "() function", ctx.start);
+				return;
+			}
+		} else if (numParams > 1) {
+			if ("stop".equals(functionName)) {
+				notifyErrorListeners("stop() function cannot have more than 1 parameter", ctx.start);
+				return;
+			}
+
+			Expression firstExp = paramExpression.get(0).getExpr();
+			if (firstExp == null) {
+				notifyErrorListeners("cannot process " + functionName + "() function", ctx.start);
+				return;
+			}
+			if (!(firstExp instanceof StringIdentifier)) {
+				notifyErrorListeners("printf-style functionality requires first print parameter to be a string", ctx.start);
+				return;
+			}
+			try {
+				int line = ctx.start.getLine();
+				int col = ctx.start.getCharPositionInLine();
+
+				List<Expression> expressions = new ArrayList<Expression>();
+				for (ParameterExpression pe : paramExpression) {
+					Expression expression = pe.getExpr();
+					expressions.add(expression);
+				}
+				thisinfo.stmt = new PrintStatement(functionName, expressions, line, col, line, col);
+				setFileLineColumn(thisinfo.stmt, ctx);
+			} catch (LanguageException e) {
+				notifyErrorListeners("cannot process " + functionName + "() function", ctx.start);
+				return;
+			}
 		}
 	}
 
 	protected void setOutputStatement(ParserRuleContext ctx,
 			ArrayList<ParameterExpression> paramExpression, StatementInfo info) {
 		if(paramExpression.size() < 2){
-			notifyErrorListeners("incorrect usage of write function (atleast 2 arguments required)", ctx.start);
+			notifyErrorListeners("incorrect usage of write function (at least 2 arguments required)", ctx.start);
 			return;
 		}
 		if(paramExpression.get(0).getExpr() instanceof DataIdentifier) {
@@ -566,36 +597,38 @@ public abstract class CommonSyntacticValidator {
 
 	/**
 	 * Converts PyDML/DML built in functions to a common format for the runtime.
-	 * @param ctx
+	 * @param ctx antlr rule context
 	 * @param namespace Namespace of the function
 	 * @param functionName Name of the builtin function
 	 * @param paramExpression Array of parameter names and values
 	 * @param fnName Token of the built in function identifier
-	 * @return
+	 * @return common syntax format for runtime
 	 */
 	protected abstract ConvertedDMLSyntax convertToDMLSyntax(ParserRuleContext ctx, String namespace, String functionName, ArrayList<ParameterExpression> paramExpression,
 			Token fnName);
 
 	/**
-	 * Function overridden for DML & PyDML that handles any language specific builtin functions
-	 * @param ctx
-	 * @param functionName
-	 * @param paramExpressions
-	 * @return  instance of {@link Expression}
+	 * Function overridden for DML &amp; PyDML that handles any language specific builtin functions
+	 * @param ctx antlr rule context
+	 * @param functionName Name of the builtin function
+	 * @param paramExpressions Array of parameter names and values
+	 * @return instance of {@link Expression}
 	 */
 	protected abstract Expression handleLanguageSpecificFunction(ParserRuleContext ctx, String functionName, ArrayList<ParameterExpression> paramExpressions);
 
 	/** Checks for builtin functions and does Action 'f'.
-	 * <br/>
+	 * <p>
 	 * Constructs the
 	 * appropriate {@link AssignmentStatement} from
-	 * {@link CommonSyntacticValidator#functionCallAssignmentStatementHelper(ParserRuleContext, Set, Set, Expression, StatementInfo, Token, Token, String, String, ArrayList, boolean)
+	 * {@link CommonSyntacticValidator#functionCallAssignmentStatementHelper(ParserRuleContext, Set, Set, Expression, StatementInfo, Token, Token, String, String, ArrayList, boolean)}
 	 * or Assign to {@link Expression} from
-	 * {@link DmlSyntacticValidator#exitBuiltinFunctionExpression(BuiltinFunctionExpressionContext)}
-	 *
-	 * @param ctx
-	 * @param functionName
-	 * @param paramExpressions
+	 * DmlSyntacticValidator's exitBuiltinFunctionExpression(BuiltinFunctionExpressionContext).
+	 * </p>
+	 * 
+	 * @param ctx antlr rule context
+	 * @param functionName Name of the builtin function
+	 * @param paramExpressions Array of parameter names and values
+	 * @param f action to perform
 	 * @return true if a builtin function was found
 	 */
 	protected boolean buildForBuiltInFunction(ParserRuleContext ctx, String functionName, ArrayList<ParameterExpression> paramExpressions, Action f) {
@@ -605,7 +638,11 @@ public abstract class CommonSyntacticValidator {
 		int line = ctx.start.getLine();
 		int col = ctx.start.getCharPositionInLine();
 		try {
-
+			if (functions.contains(functionName)) {
+				// It is a user function definition (which takes precedence if name same as built-in)
+				return false;
+			}
+			
 			Expression lsf = handleLanguageSpecificFunction(ctx, functionName, paramExpressions);
 			if (lsf != null){
 				setFileLineColumn(lsf, ctx);
@@ -628,7 +665,7 @@ public abstract class CommonSyntacticValidator {
 			}
 
 			// built-in read, rand ...
-			DataExpression dbife = DataExpression.getDataExpression(functionName, paramExpressions, fileName, line, col, line, col);
+			DataExpression dbife = DataExpression.getDataExpression(functionName, paramExpressions, fileName, line, col, line, col, errorListener);
 			if (dbife != null){
 				f.execute(dbife);
 				return true;
@@ -656,7 +693,7 @@ public abstract class CommonSyntacticValidator {
 		}
 
 		// For builtin functions without LHS
-		if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE)) {
+		if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && !functions.contains(functionName)) {
 			if (printStatements.contains(functionName)){
 				setPrintStatement(ctx, functionName, paramExpression, info);
 				return;
@@ -667,22 +704,17 @@ public abstract class CommonSyntacticValidator {
 			}
 		}
 
-		if (!hasLHS){
-			notifyErrorListeners("function call needs to have lvalue (Quickfix: change it to \'tmpVar = " + functionName + "(...)\')", nameToken);
-			return;
-		}
-
 		DataIdentifier target = null;
 		if(dataInfo instanceof DataIdentifier) {
 			target = (DataIdentifier) dataInfo;
 		}
-		else {
+		else if (dataInfo != null) {
 			notifyErrorListeners("incorrect lvalue for function call ", targetListToken);
 			return;
 		}
 
 		// For builtin functions with LHS
-		if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE)){
+		if(namespace.equals(DMLProgram.DEFAULT_NAMESPACE) && !functions.contains(functionName)){
 			final DataIdentifier ftarget = target;
 			Action f = new Action() {
 				@Override public void execute(Expression e) { setAssignmentStatement(ctx, info , ftarget, e); }
@@ -695,14 +727,18 @@ public abstract class CommonSyntacticValidator {
 		// If builtin functions weren't found...
 		FunctionCallIdentifier functCall = new FunctionCallIdentifier(paramExpression);
 		functCall.setFunctionName(functionName);
-		functCall.setFunctionNamespace(namespace);
+		// Override default namespace for imported non-built-in function
+		String inferNamespace = (sourceNamespace != null && sourceNamespace.length() > 0 && DMLProgram.DEFAULT_NAMESPACE.equals(namespace)) ? sourceNamespace : namespace;
+		functCall.setFunctionNamespace(inferNamespace);
+
+		functCall.setAllPositions(currentFile, ctx.start.getLine(), ctx.start.getCharPositionInLine(), ctx.stop.getLine(), ctx.stop.getCharPositionInLine());
 
 		setAssignmentStatement(ctx, info, target, functCall);
 	}
 
 	/**
 	 * To allow for different actions in
-	 * {@link CommonSyntacticValidator#functionCallAssignmentStatementHelper(ParserRuleContext, Set, Set, Expression, StatementInfo, Token, Token, String, String, ArrayList)}
+	 * {@link CommonSyntacticValidator#functionCallAssignmentStatementHelper(ParserRuleContext, Set, Set, Expression, StatementInfo, Token, Token, String, String, ArrayList, boolean)}
 	 */
 	public static interface Action {
 		public void execute(Expression e);
@@ -718,4 +754,19 @@ public abstract class CommonSyntacticValidator {
 	// End of Helper Functions for exit*FunctionCall*AssignmentStatement
 	// -----------------------------------------------------------------
 
+	/**
+	 * Indicates if the given data type string is a valid data type. 
+	 * 
+	 * @param datatype data type (matrix, frame, or scalar)
+	 * @param start antlr token
+	 */
+	protected void checkValidDataType(String datatype, Token start) {
+		boolean validMatrixType = 
+				datatype.equals("matrix") || datatype.equals("Matrix") || 
+				datatype.equals("frame") || datatype.equals("Frame") ||
+				datatype.equals("scalar") || datatype.equals("Scalar");
+		if(!validMatrixType	) {
+			notifyErrorListeners("incorrect datatype (expected matrix, frame or scalar)", start);
+		}
+	}
 }

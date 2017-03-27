@@ -30,7 +30,6 @@ import org.apache.sysml.hops.globalopt.gdfgraph.GraphBuilder;
 import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.parser.DMLProgram;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.Program;
 import org.apache.sysml.runtime.controlprogram.parfor.stat.Timing;
 import org.apache.sysml.utils.Explain;
@@ -50,7 +49,7 @@ public class GlobalOptimizerWrapper
 	//supported optimizers
 	public enum GlobalOptimizerType{
 		ENUMERATE_DP,
-		TRANSFORM,
+		TRANSFORM
 	}
 	
 	//internal parameters
@@ -65,18 +64,8 @@ public class GlobalOptimizerWrapper
 		}
 	}
 	
-	/**
-	 * 
-	 * @param prog
-	 * @param rtprog
-	 * @return
-	 * @throws DMLRuntimeException 
-	 * @throws HopsException
-	 * @throws LopsException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
 	public static Program optimizeProgram(DMLProgram prog, Program rtprog) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException, HopsException, LopsException
+		throws DMLRuntimeException, HopsException, LopsException
 	{
 		LOG.debug("Starting global data flow optimization.");
 		Timing time = new Timing(true);
@@ -104,14 +93,6 @@ public class GlobalOptimizerWrapper
 		return rtprog;
 	}
 	
-	/**
-	 * 
-	 * @param type
-	 * @param graphCreator
-	 * @return
-	 * @throws HopsException 
-	 * @throws DMLRuntimeException 
-	 */
 	private static GlobalOptimizer createGlobalOptimizer( GlobalOptimizerType type ) 
 		throws HopsException, DMLRuntimeException
 	{

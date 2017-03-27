@@ -23,37 +23,25 @@ import java.io.IOException;
 
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.matrix.data.FrameBlock;
-import org.apache.sysml.runtime.matrix.data.MatrixIndexes;
 import org.apache.sysml.runtime.util.MapReduceTool;
 
 
-/*
- * This write uses fixed size blocks with block-encoded keys.
- * 
+/**
+ * Single-threaded frame binary block writer.
  * 
  */
-
 public class FrameWriterBinaryBlock extends FrameWriter
 {
-	/**
-	 * @param src
-	 * @param fname
-	 * @param rlen
-	 * @param clen
-	 * @return
-	 * @throws IOException 
-	 * @throws DMLRuntimeException 
-	 * @throws DMLUnsupportedOperationException 
-	 */
+
 	@Override
-	public void writeFrameToHDFS( FrameBlock src, String fname, long rlen, long clen )
-		throws IOException, DMLRuntimeException, DMLUnsupportedOperationException 
+	public final void writeFrameToHDFS( FrameBlock src, String fname, long rlen, long clen )
+		throws IOException, DMLRuntimeException 
 	{
 		//prepare file access
 		JobConf job = new JobConf(ConfigurationManager.getCachedJobConf());
@@ -61,85 +49,83 @@ public class FrameWriterBinaryBlock extends FrameWriter
 
 		//if the file already exists on HDFS, remove it.
 		MapReduceTool.deleteFileIfExistOnHDFS( fname );
-			
-		//core write
-		writeBinaryBlockFrameToHDFS(path, job, src, rlen, clen);
+
+		//bound check for src block
+		if( src.getNumRows() > rlen || src.getNumColumns() > clen ) {
+			throw new IOException("Frame block [1:"+src.getNumRows()+",1:"+src.getNumColumns()+"] " +
+					              "out of overall frame range [1:"+rlen+",1:"+clen+"].");
+		}
+		
+		//write binary block to hdfs (sequential/parallel)
+		writeBinaryBlockFrameToHDFS( path, job, src, rlen, clen );
+	}
+
+	protected void writeBinaryBlockFrameToHDFS( Path path, JobConf job, FrameBlock src, long rlen, long clen )
+			throws IOException, DMLRuntimeException
+	{
+		FileSystem fs = FileSystem.get(job);
+		int blen = ConfigurationManager.getBlocksize();
+		
+		//sequential write to single file
+		writeBinaryBlockFrameToSequenceFile(path, job, fs, src, blen, 0, (int)rlen);		
 	}
 
 	/**
+	 * Internal primitive to write a block-aligned row range of a frame to a single sequence file, 
+	 * which is used for both single- and multi-threaded writers (for consistency). 
 	 * 
-	 * @param path
-	 * @param job
-	 * @param src
-	 * @param rlen
-	 * @param clen
-	 * @return 
-	 * @throws IOException
-	 * @throws DMLUnsupportedOperationException 
-	 * @throws DMLRuntimeException 
+	 * @param path file path
+	 * @param job job configuration
+	 * @param fs file system
+	 * @param src frame block
+	 * @param blen block length
+	 * @param rl lower row
+	 * @param ru upper row
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
+	 * @throws IOException if IOException occurs
 	 */
 	@SuppressWarnings("deprecation")
-	protected void writeBinaryBlockFrameToHDFS( Path path, JobConf job, FrameBlock src, long rlen, long clen )
-		throws IOException, DMLRuntimeException, DMLUnsupportedOperationException
+	protected final void writeBinaryBlockFrameToSequenceFile( Path path, JobConf job, FileSystem fs, FrameBlock src, int blen, int rl, int ru ) 
+		throws DMLRuntimeException, IOException
 	{
-		FileSystem fs = FileSystem.get(job);
-		int brlen = ConfigurationManager.getBlocksize();
-		int bclen = ConfigurationManager.getBlocksize();
-
-		// 1) create sequence file writer 
+		//1) create sequence file writer 
 		SequenceFile.Writer writer = null;
-		writer = new SequenceFile.Writer(fs, job, path, MatrixIndexes.class, FrameBlock.class);
+		writer = new SequenceFile.Writer(fs, job, path, LongWritable.class, FrameBlock.class);
 		
 		try
 		{
-			// 2) bound check for src block
-			if( src.getNumRows() > rlen || src.getNumColumns() > clen )
-			{
-				throw new IOException("Frame block [1:"+src.getNumRows()+",1:"+src.getNumColumns()+"] " +
-						              "out of overall frame range [1:"+rlen+",1:"+clen+"].");
-			}
-		
-			//3) reblock and write
-			MatrixIndexes indexes = new MatrixIndexes();
+			//2) reblock and write
+			LongWritable index = new LongWritable();
 
-			if( rlen <= brlen && clen <= bclen ) //opt for single block
+			if( src.getNumRows() <= blen ) //opt for single block
 			{
 				//directly write single block
-				indexes.setIndexes(1, 1);
-				writer.append(indexes, src);
+				index.set(1);
+				writer.append(index, src);
 			}
 			else //general case
 			{
 				//initialize blocks for reuse (at most 4 different blocks required)
-				FrameBlock[] blocks = createFrameBlocksForReuse(src.getSchema(), src.getColumnNames(), rlen);  
+				FrameBlock[] blocks = createFrameBlocksForReuse(src.getSchema(), src.getColumnNames(), src.getNumRows());  
 				
 				//create and write subblocks of frame
-				for(int blockRow = 0; blockRow < (int)Math.ceil(src.getNumRows()/(double)brlen); blockRow++)
-					for(int blockCol = 0; blockCol < (int)Math.ceil(src.getNumColumns()/(double)bclen); blockCol++)
-					{
-						int maxRow = (blockRow*brlen + brlen < src.getNumRows()) ? brlen : src.getNumRows() - blockRow*brlen;
-						int maxCol = (blockCol*bclen + bclen < src.getNumColumns()) ? bclen : src.getNumColumns() - blockCol*bclen;
-				
-						int row_offset = blockRow*brlen;
-						int col_offset = blockCol*bclen;
-						
-						//get reuse frame block
-						FrameBlock block = getFrameBlockForReuse(blocks);
-	
-						//copy subpart to block
-						src.sliceOperations( row_offset, row_offset+maxRow-1, 
-								             col_offset, col_offset+maxCol-1, block );
-						
-						//append block to sequence file
-						indexes.setIndexes(blockRow+1, blockCol+1);
-						writer.append(indexes, block);
-					}
+				for(int bi = rl; bi < ru; bi += blen) {
+					int len = Math.min(blen,  src.getNumRows()-bi);
+					
+					//get reuse frame block and copy subpart to block (incl meta on first)
+					FrameBlock block = getFrameBlockForReuse(blocks);
+					src.sliceOperations( bi, bi+len-1, 0, src.getNumColumns()-1, block );
+					if( bi==0 ) //first block
+						block.setColumnMetadata(src.getColumnMetadata());
+					
+					//append block to sequence file
+					index.set(bi+1);
+					writer.append(index, block);
+				}
 			}
-		
 		}
-		finally
-		{
+		finally {
 			IOUtilFunctions.closeSilently(writer);
-		}
+		}		
 	}
 }

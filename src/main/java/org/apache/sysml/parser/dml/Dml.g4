@@ -29,9 +29,9 @@ grammar Dml;
  * to you under the Apache License, Version 2.0 (the
  * "License"); you may not use this file except in compliance
  * with the License.  You may obtain a copy of the License at
- * 
+ *
  *   http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing,
  * software distributed under the License is distributed on an
  * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
@@ -87,7 +87,7 @@ iterablePredicate returns [ org.apache.sysml.parser.common.ExpressionInfo info ]
          $info = new org.apache.sysml.parser.common.ExpressionInfo();
   } :
     from=expression ':' to=expression #IterablePredicateColonExpression
-    | ID '(' from=expression ',' to=expression ',' increment=expression ')' #IterablePredicateSeqExpression
+    | ID '(' from=expression ',' to=expression (',' increment=expression)? ')' #IterablePredicateSeqExpression
     ;
 
 functionStatement returns [ org.apache.sysml.parser.common.StatementInfo info ]
@@ -98,7 +98,7 @@ functionStatement returns [ org.apache.sysml.parser.common.StatementInfo info ]
     // ------------------------------------------
     // FunctionStatement & ExternalFunctionStatement
     // small change: only allow typed arguments here ... instead of data identifier
-    name=ID ('<-'|'=') 'function' '(' ( inputParams+=typedArgNoAssign (',' inputParams+=typedArgNoAssign)* )? ')'  ( 'return' '(' ( outputParams+=typedArgNoAssign (',' outputParams+=typedArgNoAssign)* )? ')' )? '{' (body+=statement ';'*)* '}' # InternalFunctionDefExpression
+    name=ID ('<-'|'=') 'function' '(' ( inputParams+=typedArgNoAssign (',' inputParams+=typedArgNoAssign)* )? ')'  ( 'return' '(' ( outputParams+=typedArgNoAssign (',' outputParams+=typedArgNoAssign)* )? ')' )? '{' (body+=statement ';'*)* '}' ';'* # InternalFunctionDefExpression
     | name=ID ('<-'|'=') 'externalFunction' '(' ( inputParams+=typedArgNoAssign (',' inputParams+=typedArgNoAssign)* )? ')'  ( 'return' '(' ( outputParams+=typedArgNoAssign (',' outputParams+=typedArgNoAssign)* )? ')' )?   'implemented' 'in' '(' ( otherParams+=strictParameterizedKeyValueString (',' otherParams+=strictParameterizedKeyValueString)* )? ')' ';'*    # ExternalFunctionDefExpression
     // ------------------------------------------
 ;
@@ -161,7 +161,7 @@ expression returns [ org.apache.sysml.parser.common.ExpressionInfo info ]
     | '(' left=expression ')'                       # AtomicExpression
 
     // Should you allow indexed expression here ?
-    // | '[' targetList+=expression (',' targetList+=expression)* ']'  # MultiIdExpression
+    | '[' targetList+=expression (',' targetList+=expression)* ']'  # MultiIdExpression
 
     // | BOOLEAN                                       # ConstBooleanIdExpression
     | 'TRUE'                                        # ConstTrueExpression
@@ -181,7 +181,7 @@ strictParameterizedKeyValueString : paramName=ID '=' paramVal=STRING ;
 ID : (ALPHABET (ALPHABET|DIGIT|'_')*  '::')? ALPHABET (ALPHABET|DIGIT|'_')*
     // Special ID cases:
    // | 'matrix' // --> This is a special case which causes lot of headache
-   | 'as.scalar' | 'as.matrix' | 'as.double' | 'as.integer' | 'as.logical' | 'index.return' | 'lower.tail'
+   | 'as.scalar' | 'as.matrix' | 'as.frame' | 'as.double' | 'as.integer' | 'as.logical' | 'index.return' | 'lower.tail'
 ;
 // Unfortunately, we have datatype name clashing with builtin function name: matrix :(
 // Therefore, ugly work around for checking datatype
@@ -210,7 +210,7 @@ COMMANDLINE_POSITION_ID: '$' DIGIT+;
 
 // supports single and double quoted string with escape characters
 STRING: '"' ( ESC | ~[\\"] )*? '"' | '\'' ( ESC | ~[\\'] )*? '\'';
-fragment ESC : '\\' [abtnfrv"'\\] ;
+fragment ESC : '\\' [btnfr"'\\] ;
 // Comments, whitespaces and new line
 LINE_COMMENT : '#' .*? '\r'? '\n' -> skip ;
 MULTILINE_BLOCK_COMMENT : '/*' .*? '*/' -> skip ;

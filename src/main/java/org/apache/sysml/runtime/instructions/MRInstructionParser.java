@@ -36,7 +36,6 @@ import org.apache.sysml.lops.WeightedSquaredLossR;
 import org.apache.sysml.lops.WeightedUnaryMM;
 import org.apache.sysml.lops.WeightedUnaryMMR;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.mr.AggregateBinaryInstruction;
 import org.apache.sysml.runtime.instructions.mr.AggregateInstruction;
 import org.apache.sysml.runtime.instructions.mr.AggregateUnaryInstruction;
@@ -64,6 +63,7 @@ import org.apache.sysml.runtime.instructions.mr.MatrixReshapeMRInstruction;
 import org.apache.sysml.runtime.instructions.mr.PMMJMRInstruction;
 import org.apache.sysml.runtime.instructions.mr.ParameterizedBuiltinMRInstruction;
 import org.apache.sysml.runtime.instructions.mr.PickByCountInstruction;
+import org.apache.sysml.runtime.instructions.mr.PlusMultInstruction;
 import org.apache.sysml.runtime.instructions.mr.QuaternaryInstruction;
 import org.apache.sysml.runtime.instructions.mr.RandInstruction;
 import org.apache.sysml.runtime.instructions.mr.RangeBasedReIndexInstruction;
@@ -183,6 +183,9 @@ public class MRInstructionParser extends InstructionParser
 		String2MRInstructionType.put( "^2"   , MRINSTRUCTION_TYPE.ArithmeticBinary); //special ^ case
 		String2MRInstructionType.put( "*2"   , MRINSTRUCTION_TYPE.ArithmeticBinary); //special * case
 		String2MRInstructionType.put( "-nz"  , MRINSTRUCTION_TYPE.ArithmeticBinary); //special - case
+		String2MRInstructionType.put( "+*"   , MRINSTRUCTION_TYPE.ArithmeticBinary2); 
+		String2MRInstructionType.put( "-*"   , MRINSTRUCTION_TYPE.ArithmeticBinary2); 
+		
 		String2MRInstructionType.put( "map+"    , MRINSTRUCTION_TYPE.ArithmeticBinary);
 		String2MRInstructionType.put( "map-"    , MRINSTRUCTION_TYPE.ArithmeticBinary);
 		String2MRInstructionType.put( "map*"    , MRINSTRUCTION_TYPE.ArithmeticBinary);
@@ -297,7 +300,7 @@ public class MRInstructionParser extends InstructionParser
 	
 	
 	public static MRInstruction parseSingleInstruction (String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		if ( str == null || str.isEmpty() )
 			return null;
@@ -307,7 +310,7 @@ public class MRInstructionParser extends InstructionParser
 	}
 	
 	public static MRInstruction parseSingleInstruction (MRINSTRUCTION_TYPE mrtype, String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		if ( str == null || str.isEmpty() )
 			return null;
@@ -333,6 +336,9 @@ public class MRInstructionParser extends InstructionParser
 						return BinaryInstruction.parseInstruction(str);
 				}
 			}
+			
+			case ArithmeticBinary2:
+				return PlusMultInstruction.parseInstruction(str);
 			
 			case AggregateBinary:
 				return AggregateBinaryInstruction.parseInstruction(str);
@@ -451,7 +457,7 @@ public class MRInstructionParser extends InstructionParser
 		}
 	}
 	
-	public static MRInstruction[] parseMixedInstructions ( String str ) throws DMLUnsupportedOperationException, DMLRuntimeException {
+	public static MRInstruction[] parseMixedInstructions ( String str ) throws DMLRuntimeException {
 		if ( str == null || str.isEmpty() )
 			return null;
 		
@@ -464,7 +470,7 @@ public class MRInstructionParser extends InstructionParser
 		return mrinst;
 	}
 	
-	public static AggregateInstruction[] parseAggregateInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static AggregateInstruction[] parseAggregateInstructions(String str) throws DMLRuntimeException 
 	{
 		AggregateInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -480,7 +486,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static ReblockInstruction[] parseReblockInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static ReblockInstruction[] parseReblockInstructions(String str) throws DMLRuntimeException 
 	{
 		ReblockInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -496,7 +502,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static CSVReblockInstruction[] parseCSVReblockInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static CSVReblockInstruction[] parseCSVReblockInstructions(String str) throws DMLRuntimeException 
 	{
 		CSVReblockInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -512,7 +518,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static CSVWriteInstruction[] parseCSVWriteInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static CSVWriteInstruction[] parseCSVWriteInstructions(String str) throws DMLRuntimeException 
 	{
 		CSVWriteInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -528,7 +534,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static AggregateBinaryInstruction[] parseAggregateBinaryInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static AggregateBinaryInstruction[] parseAggregateBinaryInstructions(String str) throws DMLRuntimeException 
 	{
 		AggregateBinaryInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -544,7 +550,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static DataGenMRInstruction[] parseDataGenInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static DataGenMRInstruction[] parseDataGenInstructions(String str) throws DMLRuntimeException 
 	{
 		DataGenMRInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -560,7 +566,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static MRInstruction[] parseCombineInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static MRInstruction[] parseCombineInstructions(String str) throws DMLRuntimeException 
 	{
 		MRInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -582,7 +588,7 @@ public class MRInstructionParser extends InstructionParser
 		return inst;
 	}
 	
-	public static CM_N_COVInstruction[] parseCM_N_COVInstructions(String str) throws DMLUnsupportedOperationException, DMLRuntimeException 
+	public static CM_N_COVInstruction[] parseCM_N_COVInstructions(String str) throws DMLRuntimeException 
 	{
 		CM_N_COVInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
@@ -599,7 +605,7 @@ public class MRInstructionParser extends InstructionParser
 	}
 
 	public static GroupedAggregateInstruction[] parseGroupedAggInstructions(String str) 
-	throws DMLUnsupportedOperationException, DMLRuntimeException{
+	throws DMLRuntimeException{
 		GroupedAggregateInstruction[] inst=null;
 		if(str!=null && !str.isEmpty())
 		{

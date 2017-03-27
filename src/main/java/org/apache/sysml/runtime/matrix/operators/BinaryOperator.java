@@ -33,32 +33,32 @@ import org.apache.sysml.runtime.functionobjects.IntegerDivide;
 import org.apache.sysml.runtime.functionobjects.LessThan;
 import org.apache.sysml.runtime.functionobjects.LessThanEquals;
 import org.apache.sysml.runtime.functionobjects.Minus;
+import org.apache.sysml.runtime.functionobjects.MinusMultiply;
 import org.apache.sysml.runtime.functionobjects.MinusNz;
 import org.apache.sysml.runtime.functionobjects.Modulus;
 import org.apache.sysml.runtime.functionobjects.Multiply;
 import org.apache.sysml.runtime.functionobjects.NotEquals;
 import org.apache.sysml.runtime.functionobjects.Or;
 import org.apache.sysml.runtime.functionobjects.Plus;
+import org.apache.sysml.runtime.functionobjects.PlusMultiply;
 import org.apache.sysml.runtime.functionobjects.Power;
 import org.apache.sysml.runtime.functionobjects.ValueFunction;
-import org.apache.sysml.runtime.functionobjects.Builtin.BuiltinFunctionCode;
+import org.apache.sysml.runtime.functionobjects.Builtin.BuiltinCode;
 
 public class BinaryOperator  extends Operator implements Serializable
 {
-
 	private static final long serialVersionUID = -2547950181558989209L;
 
 	public ValueFunction fn;
 	
 	public BinaryOperator(ValueFunction p)
 	{
-		fn=p;
-		//as long as (0 op 0)=0, then op is sparseSafe
-		if(fn instanceof Plus || fn instanceof Multiply || fn instanceof Minus 
-				|| fn instanceof And || fn instanceof Or)
-			sparseSafe=true;
-		else
-			sparseSafe=false;
+		fn = p;
+		
+		//binaryop is sparse-safe iff (0 op 0) == 0
+		sparseSafe = (fn instanceof Plus || fn instanceof Multiply 
+			|| fn instanceof Minus || fn instanceof And || fn instanceof Or 
+			|| fn instanceof PlusMultiply || fn instanceof MinusMultiply);
 	}
 	
 	/**
@@ -66,7 +66,7 @@ public class BinaryOperator  extends Operator implements Serializable
 	 * This is used in order to use a common code path for consistency between 
 	 * compiler and runtime.
 	 * 
-	 * @return
+	 * @return binary operator type for a function object
 	 */
 	public OpOp2 getBinaryOperatorOpOp2()
 	{
@@ -87,11 +87,11 @@ public class BinaryOperator  extends Operator implements Serializable
 		else if( fn instanceof Power )			return OpOp2.POW;
 		else if( fn instanceof MinusNz )		return OpOp2.MINUS_NZ;
 		else if( fn instanceof Builtin ) {
-			BuiltinFunctionCode bfc = ((Builtin) fn).getBuiltinFunctionCode();
-			if( bfc == BuiltinFunctionCode.MIN ) 		return OpOp2.MIN;
-			else if( bfc == BuiltinFunctionCode.MAX ) 	return OpOp2.MAX;
-			else if( bfc == BuiltinFunctionCode.LOG ) 	return OpOp2.LOG;
-			else if( bfc == BuiltinFunctionCode.LOG_NZ ) return OpOp2.LOG_NZ;
+			BuiltinCode bfc = ((Builtin) fn).getBuiltinCode();
+			if( bfc == BuiltinCode.MIN ) 		return OpOp2.MIN;
+			else if( bfc == BuiltinCode.MAX ) 	return OpOp2.MAX;
+			else if( bfc == BuiltinCode.LOG ) 	return OpOp2.LOG;
+			else if( bfc == BuiltinCode.LOG_NZ ) return OpOp2.LOG_NZ;
 		}
 		
 		//non-supported ops (not required for sparsity estimates):

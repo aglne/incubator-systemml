@@ -44,8 +44,11 @@ public class ParameterizedBuiltin extends ValueFunction
 
 	private static final long serialVersionUID = -5966242955816522697L;
 	
-	public enum ParameterizedBuiltinCode { INVALID, CDF, INVCDF, RMEMPTY, REPLACE, REXPAND, TRANSFORM };
-	public enum ProbabilityDistributionCode { INVALID, NORMAL, EXP, CHISQ, F, T };
+	public enum ParameterizedBuiltinCode { 
+		CDF, INVCDF, RMEMPTY, REPLACE, REXPAND,
+		TRANSFORM, TRANSFORMAPPLY, TRANSFORMDECODE };
+	public enum ProbabilityDistributionCode { 
+		INVALID, NORMAL, EXP, CHISQ, F, T };
 	
 	public ParameterizedBuiltinCode bFunc;
 	public ProbabilityDistributionCode distFunc;
@@ -60,6 +63,8 @@ public class ParameterizedBuiltin extends ValueFunction
 		String2ParameterizedBuiltinCode.put( "replace", ParameterizedBuiltinCode.REPLACE);
 		String2ParameterizedBuiltinCode.put( "rexpand", ParameterizedBuiltinCode.REXPAND);
 		String2ParameterizedBuiltinCode.put( "transform", ParameterizedBuiltinCode.TRANSFORM);
+		String2ParameterizedBuiltinCode.put( "transformapply", ParameterizedBuiltinCode.TRANSFORMAPPLY);
+		String2ParameterizedBuiltinCode.put( "transformdecode", ParameterizedBuiltinCode.TRANSFORMDECODE);
 	}
 	
 	static public HashMap<String, ProbabilityDistributionCode> String2DistCode;
@@ -167,14 +172,15 @@ public class ParameterizedBuiltin extends ValueFunction
 			case TRANSFORM:
 				return new ParameterizedBuiltin(ParameterizedBuiltinCode.TRANSFORM);
 			
+			case TRANSFORMAPPLY:
+				return new ParameterizedBuiltin(ParameterizedBuiltinCode.TRANSFORMAPPLY);
+			
+			case TRANSFORMDECODE:
+				return new ParameterizedBuiltin(ParameterizedBuiltinCode.TRANSFORMDECODE);
+				
 			default:
 				throw new DMLRuntimeException("Invalid parameterized builtin code: " + code);
 		}
-	}
-	
-	public Object clone() throws CloneNotSupportedException {
-		// cloning is not supported for singleton classes
-		throw new CloneNotSupportedException();
 	}
 	
 	public double execute(HashMap<String,String> params) throws DMLRuntimeException {
@@ -200,12 +206,12 @@ public class ParameterizedBuiltin extends ValueFunction
 	/**
 	 * Helper function to compute distribution-specific cdf (both lowertail and uppertail) and inverse cdf.
 	 * 
-	 * @param dcode
-	 * @param params
-	 * @param inverse
-	 * @return
-	 * @throws MathArithmeticException
-	 * @throws DMLRuntimeException
+	 * @param dcode probablility distribution code
+	 * @param params map of parameters
+	 * @param inverse true if inverse
+	 * @return cdf or inverse cdf
+	 * @throws MathArithmeticException if MathArithmeticException occurs
+	 * @throws DMLRuntimeException if DMLRuntimeException occurs
 	 */
 	private double computeFromDistribution (ProbabilityDistributionCode dcode, HashMap<String,String> params, boolean inverse ) throws MathArithmeticException, DMLRuntimeException {
 		

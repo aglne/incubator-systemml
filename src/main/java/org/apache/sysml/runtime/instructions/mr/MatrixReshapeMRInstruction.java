@@ -22,7 +22,6 @@ package org.apache.sysml.runtime.instructions.mr;
 import java.util.ArrayList;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
 import org.apache.sysml.runtime.matrix.data.LibMatrixReorg;
@@ -32,11 +31,6 @@ import org.apache.sysml.runtime.matrix.mapred.IndexedMatrixValue;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.util.UtilFunctions;
 
-
-/**
- * 
- * 
- */
 public class MatrixReshapeMRInstruction extends UnaryInstruction
 {	
 	
@@ -64,13 +58,7 @@ public class MatrixReshapeMRInstruction extends UnaryInstruction
 	{
 		_mcIn = mcIn;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static MatrixReshapeMRInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -94,7 +82,7 @@ public class MatrixReshapeMRInstruction extends UnaryInstruction
 	public void processInstruction(Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue,
 			IndexedMatrixValue zeroInput, int brlen, int bclen )
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{		
 		ArrayList<IndexedMatrixValue> blkList = cachedValues.get(input);
 		if( blkList != null )

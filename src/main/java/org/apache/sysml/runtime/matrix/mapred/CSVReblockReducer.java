@@ -29,7 +29,6 @@ import org.apache.hadoop.mapred.Reducer;
 import org.apache.hadoop.mapred.Reporter;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.mr.CSVReblockInstruction;
 import org.apache.sysml.runtime.instructions.mr.ReblockInstruction;
 import org.apache.sysml.runtime.matrix.CSVReblockMR.BlockRow;
@@ -64,13 +63,6 @@ public class CSVReblockReducer extends ReduceBase implements Reducer<TaggedFirst
 		reporter.incrCounter(Counters.COMBINE_OR_REDUCE_TIME, System.currentTimeMillis()-start);
 	}
 
-	/**
-	 * 
-	 * @param indexes
-	 * @param values
-	 * @param dimensions
-	 * @throws IOException
-	 */
 	protected void processCSVReblock(TaggedFirstSecondIndexes indexes, Iterator<BlockRow> values, 
 			HashMap<Byte, MatrixCharacteristics> dimensions) throws IOException
 	{
@@ -115,8 +107,6 @@ public class CSVReblockReducer extends ReduceBase implements Reducer<TaggedFirst
 		CSVReblockInstruction[] reblockInstructions;
 		try {
 			reblockInstructions = MRJobConfiguration.getCSVReblockInstructions(job);
-		} catch (DMLUnsupportedOperationException e) {
-			throw new RuntimeException(e);
 		} catch (DMLRuntimeException e) {
 			throw new RuntimeException(e);
 		}

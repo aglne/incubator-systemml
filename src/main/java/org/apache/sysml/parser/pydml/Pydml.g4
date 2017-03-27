@@ -178,7 +178,7 @@ statement returns [ org.apache.sysml.parser.common.StatementInfo info ]
     | targetList=dataIdentifier '=' source=expression NEWLINE   # AssignmentStatement
     // IfStatement
     // | 'if' OPEN_PAREN predicate=expression CLOSE_PAREN (ifBody+=statement ';'* |  NEWLINE INDENT (ifBody+=statement)+  DEDENT )  ('else' (elseBody+=statement ';'* | '{' (elseBody+=statement ';'*)*  '}'))?  # IfStatement
-    | 'if' (OPEN_PAREN predicate=expression CLOSE_PAREN | predicate=expression) ':'  NEWLINE INDENT (ifBody+=statement)+  DEDENT   ('else'  ':'  NEWLINE INDENT (elseBody+=statement)+  DEDENT )?  # IfStatement
+    | 'if' (OPEN_PAREN predicate=expression CLOSE_PAREN | predicate=expression) ':'  NEWLINE INDENT (ifBody+=statement)+  DEDENT (elifBranches += elifBranch)* ('else'  ':'  NEWLINE INDENT (elseBody+=statement)+  DEDENT )?  # IfStatement
     // ------------------------------------------
     // ForStatement & ParForStatement
     | 'for' (OPEN_PAREN iterVar=ID 'in' iterPred=iterablePredicate (',' parForParams+=strictParameterizedExpression)* CLOSE_PAREN |  iterVar=ID 'in' iterPred=iterablePredicate (',' parForParams+=strictParameterizedExpression)* ) ':'  NEWLINE INDENT (body+=statement)+  DEDENT  # ForStatement
@@ -189,13 +189,21 @@ statement returns [ org.apache.sysml.parser.common.StatementInfo info ]
     | NEWLINE #IgnoreNewLine
 ;
 
+elifBranch returns [ org.apache.sysml.parser.common.StatementInfo info ]
+  @init {
+        // This actions occurs regardless of how many alternatives in this rule
+        $info = new org.apache.sysml.parser.common.StatementInfo();
+  } :
+     'elif' (OPEN_PAREN predicate=expression CLOSE_PAREN | predicate=expression) ':'  NEWLINE INDENT (elifBody+=statement)+  DEDENT
+;
+
 iterablePredicate returns [ org.apache.sysml.parser.common.ExpressionInfo info ]
   @init {
          // This actions occurs regardless of how many alternatives in this rule
          $info = new org.apache.sysml.parser.common.ExpressionInfo();
   } :
     from=expression ':' to=expression #IterablePredicateColonExpression
-    | ID OPEN_PAREN from=expression ',' to=expression ',' increment=expression CLOSE_PAREN #IterablePredicateSeqExpression
+    | ID OPEN_PAREN from=expression ',' to=expression (',' increment=expression)? CLOSE_PAREN #IterablePredicateSeqExpression
     ;
 
 functionStatement returns [ org.apache.sysml.parser.common.StatementInfo info ]
@@ -220,8 +228,8 @@ dataIdentifier returns [ org.apache.sysml.parser.common.ExpressionInfo dataInfo 
        // $dataInfo.expr = new org.apache.sysml.parser.DataIdentifier();
 } :
     // ------------------------------------------
-    // IndexedIdentifier
-    name=ID OPEN_BRACK (rowLower=expression (':' rowUpper=expression)?)? ',' (colLower=expression (':' colUpper=expression)?)? CLOSE_BRACK # IndexedExpression
+    // IndexedIdentifier -- allows implicit lower and upper bounds
+    name=ID OPEN_BRACK (rowLower=expression)? (rowImplicitSlice=':' (rowUpper=expression)?)?  (',' (colLower=expression)? (colImplicitSlice=':' (colUpper=expression)?)?)? CLOSE_BRACK # IndexedExpression
     // ------------------------------------------
     | ID                                            # SimpleDataIdentifierExpression
     | COMMANDLINE_NAMED_ID                          # CommandlineParamExpression
@@ -325,7 +333,7 @@ COMMANDLINE_POSITION_ID: '$' DIGIT+;
 
 // supports single and double quoted string with escape characters
 STRING: '"' ( ESC | ~[\\"] )*? '"' | '\'' ( ESC | ~[\\'] )*? '\'';
-fragment ESC : '\\' [abtnfrv"'\\] ;
+fragment ESC : '\\' [btnfr"'\\] ;
 // Comments, whitespaces and new line
 // LINE_COMMENT : '#' .*? '\r'? '\n' -> skip ;
 // MULTILINE_BLOCK_COMMENT : '/*' .*? '*/' -> skip ;
@@ -396,4 +404,4 @@ NEWLINE : ( '\r'? '\n' | '\r' ) SPACES?
 }
 ;
 
-SKIP : ( SPACES | COMMENT | LINE_JOINING ) -> skip ;
+SKIP_WS : ( SPACES | COMMENT | LINE_JOINING ) -> skip ;

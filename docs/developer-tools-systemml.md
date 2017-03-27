@@ -28,10 +28,19 @@ Useful Tools for Developing SystemML:
 * This will become a table of contents (this text will be scraped).
 {:toc}
 
+## IntelliJ
+
+IntelliJ can be used since it provides great support for mixed Java and Scala projects as described [here](https://cwiki.apache.org/confluence/display/SPARK/Useful+Developer+Tools#UsefulDeveloperTools-IntelliJ).
+
+### Import SystemML project to IntelliJ
+
+ 1. Download IntelliJ and install the Scala plug-in for IntelliJ.
+ 2. Go to "File -> Import Project", locate the systemml source directory, and select "Maven Project".
+ 3. In the Import wizard, it's fine to leave settings at their default. However it is usually useful to enable "Import Maven projects automatically", since changes to the project structure will automatically update the IntelliJ project.
 
 ## Eclipse
 
-Eclipse [Luna SR2](https://eclipse.org/downloads/packages/release/luna/sr2) can be used for an integrated development development environment with SystemML code.  Maven integration is required which is included in the [Eclipse IDE for Java Developers](https://eclipse.org/downloads/packages/eclipse-ide-java-developers/lunasr2) package.
+Eclipse [Luna SR2](https://eclipse.org/downloads/packages/release/luna/sr2) can be used for an integrated development environment with SystemML code.  Maven integration is required which is included in the [Eclipse IDE for Java Developers](https://eclipse.org/downloads/packages/eclipse-ide-java-developers/lunasr2) package.
 
 To get started in Eclipse, import SystemML's pom.xml file as an existing Maven project.  After import is completed, the resulting Eclipse installation should include two maven connectors.
 
@@ -40,14 +49,14 @@ To get started in Eclipse, import SystemML's pom.xml file as an existing Maven p
 ![Eclipse Details](img/developer-tools/eclipse-details.png "Eclipse Details")
 
 
-## Eclipse with Scala
+### Eclipse with Scala
 
 An additional Maven connector is required for working with Scala code in Eclipse.  The [Maven Integration for Scala IDE](http://scala-ide.org/docs/tutorials/m2eclipse/) plugin can be installed into Eclipse from [this](http://alchim31.free.fr/m2e-scala/update-site/) update site.  
 
 ![Maven Scala Integration](img/developer-tools/maven-scala.png "Maven Scala Integration")
 
 ![Installed Maven Connectors](img/developer-tools/maven-connectors.png "Installed Maven Connectors")
-<br></br>
+
 The [Scala IDE 4.0.0 plugin for Eclipse](http://scala-ide.org/download/prev-stable.html) is known to work for mixed Java and Scala development in [Eclipse IDE for Java Developers Luna SR2](https://eclipse.org/downloads/packages/eclipse-ide-java-developers/lunasr2).  <b>Release 4.0.0</b> of the Scala IDE for Eclipse plugin can be downloaded [here](http://download.scala-ide.org/sdk/lithium/e44/scala211/stable/site_assembly-20150305-1905.zip) and then installed through Eclipse's 'Install New Software' menu item.  Only the Scala IDE and ScalaTest components are needed.
 
 ![Scala IDE Components](img/developer-tools/scala-components.png "Scala IDE Components")
@@ -59,7 +68,7 @@ Note the corresponding Eclipse project needs to include the Scala nature.  Typic
 ![Add Scala Nature](img/developer-tools/scala-nature.png "Add Scala Nature")
 
 
-## Eclipse Java Only (How to skip Scala)
+### Eclipse Java Only (How to skip Scala)
 
 Since the core SystemML code is written in Java, developers may prefer not to use Eclipse in a mixed Java/Scala environment.  To configure Eclipse to skip the Scala code of SystemML and avoid installing any Scala-related components, Maven lifecycle mappings can be created.  The simplest way to create these mappings is to use Eclipse's quick fix option to resolve the following pom.xml errors which occur if Maven Integration for Scala is not present.
 
@@ -69,7 +78,22 @@ Since the core SystemML code is written in Java, developers may prefer not to us
 
 The lifecycle mappings are stored in a workspace metadata file as specified in Eclipse's Maven Lifecycle Mappings Preferences page.  The pom.xml file itself is unchanged which allows the Scala portion to be built outside of Eclipse using mvn command line.
 
+## Troubleshooting
 
-## IntelliJ
+Please see below tips for resolving some compilation issues that might occur after importing the SystemML project.
 
-IntelliJ can also be used since it provides good support for mixed Java and Scala projects as described [here](https://cwiki.apache.org/confluence/display/SPARK/Useful+Developer+Tools#UsefulDeveloperTools-IntelliJ).
+### Invalid cross-compiled libraries error
+
+Since Scala IDE bundles the latest versions (2.10.5 and 2.11.6 at this point), you need to add one in Eclipse Preferences -> Scala -> Installations by pointing to the <code>lib</code> directory of your Scala 2.10.4 distribution. Once this is done, select SystemML project, right-click, choose Scala -> Set Scala Installation and point to the 2.10.4 installation. This should clear all errors about invalid cross-compiled libraries. A clean build should succeed now.
+
+### Incompatible Scala version error
+
+Change IDE Scala version `Project->Properties->Scala Compiler -> Scala Installation`  to   `Fixed Scala Installation: 2.10.5`
+
+### Not found type error
+
+Run command `mvn package`, and do `Project -> Refresh`
+
+### Marketplace not found error for Eclipse Luna
+
+Except for Scala IDE plugin install, please make sure to get update from "http://alchim31.free.fr/m2e-scala/update-site" to update maven connector for Scala.

@@ -24,7 +24,6 @@ import java.util.ArrayList;
 import org.apache.sysml.hops.OptimizerUtils;
 import org.apache.sysml.lops.PMMJ.CacheType;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.MatrixValue;
@@ -35,11 +34,6 @@ import org.apache.sysml.runtime.matrix.mapred.MRBaseForCommonInstructions;
 import org.apache.sysml.runtime.matrix.operators.Operator;
 import org.apache.sysml.runtime.util.UtilFunctions;
 
-
-/**
- * 
- * 
- */
 public class PMMJMRInstruction extends BinaryMRInstructionBase implements IDistributedCacheConsumer
 {	
 	
@@ -65,13 +59,7 @@ public class PMMJMRInstruction extends BinaryMRInstructionBase implements IDistr
 	public boolean getOutputEmptyBlocks() {
 		return _outputEmptyBlocks;
 	}
-	
-	/**
-	 * 
-	 * @param str
-	 * @return
-	 * @throws DMLRuntimeException
-	 */
+
 	public static PMMJMRInstruction parseInstruction ( String str ) 
 		throws DMLRuntimeException 
 	{
@@ -81,8 +69,8 @@ public class PMMJMRInstruction extends BinaryMRInstructionBase implements IDistr
 		String opcode = parts[0];
 		byte in1 = Byte.parseByte(parts[1]);
 		byte in2 = Byte.parseByte(parts[2]);
+		long nrow = UtilFunctions.toLong(Double.parseDouble(parts[3]));
 		byte out = Byte.parseByte(parts[4]);
-		long nrow = Long.parseLong(parts[3]);
 		CacheType ctype = CacheType.valueOf(parts[5]);
 		boolean outputEmpty = Boolean.parseBoolean(parts[6]);
 		
@@ -96,7 +84,7 @@ public class PMMJMRInstruction extends BinaryMRInstructionBase implements IDistr
 	public void processInstruction(Class<? extends MatrixValue> valueClass,
 			CachedValueMap cachedValues, IndexedMatrixValue tempValue,
 			IndexedMatrixValue zeroInput, int blockRowFactor, int blockColFactor)
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{	
 		//get both matrix inputs (left side always permutation)
 		DistributedCacheInput dcInput = MRBaseForCommonInstructions.dcValues.get(input1);

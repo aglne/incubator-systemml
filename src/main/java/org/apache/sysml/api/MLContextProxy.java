@@ -21,11 +21,10 @@ package org.apache.sysml.api;
 
 import java.util.ArrayList;
 
-import org.apache.sysml.api.monitoring.Location;
+import org.apache.sysml.api.mlcontext.MLContextException;
 import org.apache.sysml.parser.Expression;
 import org.apache.sysml.parser.LanguageException;
 import org.apache.sysml.runtime.instructions.Instruction;
-import org.apache.sysml.runtime.instructions.spark.SPInstruction;
 
 /**
  * The purpose of this proxy is to shield systemml internals from direct access to MLContext
@@ -39,66 +38,52 @@ public class MLContextProxy
 	
 	private static boolean _active = false;
 	
-	/**
-	 * 
-	 * @param flag
-	 */
 	public static void setActive(boolean flag) {
 		_active = flag;
 	}
 	
-	/**
-	 * 
-	 * @return
-	 */
 	public static boolean isActive() {
 		return _active;
 	}
 
-	/**
-	 * 
-	 * @param tmp
-	 */
+	@SuppressWarnings("deprecation")
 	public static ArrayList<Instruction> performCleanupAfterRecompilation(ArrayList<Instruction> tmp) 
 	{
-		if(MLContext.getActiveMLContext() != null) {
-			return MLContext.getActiveMLContext().performCleanupAfterRecompilation(tmp);
+		if(org.apache.sysml.api.MLContext.getActiveMLContext() != null) {
+			return org.apache.sysml.api.MLContext.getActiveMLContext().performCleanupAfterRecompilation(tmp);
+		} else if (org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext() != null) {
+			return org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext().getInternalProxy().performCleanupAfterRecompilation(tmp);
 		}
 		return tmp;
 	}
 
-	/**
-	 * 
-	 * @param source
-	 * @param targetname
-	 * @throws LanguageException 
-	 */
+	@SuppressWarnings("deprecation")
 	public static void setAppropriateVarsForRead(Expression source, String targetname) 
 		throws LanguageException 
 	{
-		MLContext mlContext = MLContext.getActiveMLContext();
-		if(mlContext != null) {
-			mlContext.setAppropriateVarsForRead(source, targetname);
+		if(org.apache.sysml.api.MLContext.getActiveMLContext() != null) {
+			org.apache.sysml.api.MLContext.getActiveMLContext().setAppropriateVarsForRead(source, targetname);
+		} else if (org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext() != null) {
+			org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext().getInternalProxy().setAppropriateVarsForRead(source, targetname);
 		}
 	}
-	
-	public static MLContext getActiveMLContext() {
-		return MLContext.getActiveMLContext();
-	}
-	
-	public static void setInstructionForMonitoring(Instruction inst) {
-		Location loc = inst.getLocation();
-		MLContext mlContext = MLContext.getActiveMLContext();
-		if(loc != null && mlContext != null && mlContext.getMonitoringUtil() != null) {
-			mlContext.getMonitoringUtil().setInstructionLocation(loc, inst);
+
+	@SuppressWarnings("deprecation")
+	public static Object getActiveMLContext() {
+		if (org.apache.sysml.api.MLContext.getActiveMLContext() != null) {
+			return org.apache.sysml.api.MLContext.getActiveMLContext();
+		} else if (org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext() != null) {
+			return org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext();
 		}
+		return null;
 	}
-	
-	public static void addRDDForInstructionForMonitoring(SPInstruction inst, Integer rddID) {
-		MLContext mlContext = MLContext.getActiveMLContext();
-		if(mlContext != null && mlContext.getMonitoringUtil() != null) {
-			mlContext.getMonitoringUtil().addRDDForInstruction(inst, rddID);
+
+	public static Object getActiveMLContextForAPI() {
+		if (org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext() != null) {
+			return org.apache.sysml.api.mlcontext.MLContext.getActiveMLContext();
 		}
+		throw new MLContextException("No MLContext object is currently active. Have you created one? "
+				+ "Hint: in Scala, 'val ml = new MLContext(sc)'", true);
 	}
 	
 }

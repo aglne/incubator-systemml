@@ -28,7 +28,6 @@ import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.matrix.data.IJV;
 import org.apache.sysml.runtime.matrix.data.MatrixBlock;
 import org.apache.sysml.runtime.matrix.data.MatrixCell;
@@ -40,7 +39,7 @@ public class WriterBinaryCell extends MatrixWriter
 
 	@Override
 	public void writeMatrixToHDFS(MatrixBlock src, String fname, long rlen, long clen, int brlen, int bclen, long nnz) 
-		throws IOException, DMLRuntimeException, DMLUnsupportedOperationException 
+		throws IOException, DMLRuntimeException 
 	{
 		//prepare file access
 		JobConf job = new JobConf(ConfigurationManager.getCachedJobConf());
@@ -51,6 +50,9 @@ public class WriterBinaryCell extends MatrixWriter
 			
 		//core write
 		writeBinaryCellMatrixToHDFS(path, job, src, rlen, clen, brlen, bclen);
+
+		FileSystem fs = FileSystem.get(job);
+		IOUtilFunctions.deleteCrcFilesFromLocalFileSystem(fs, path);
 	}
 
 	@Override
@@ -62,26 +64,22 @@ public class WriterBinaryCell extends MatrixWriter
 		Path path = new Path( fname );
 		FileSystem fs = FileSystem.get(job);
 
-		SequenceFile.Writer writer = new SequenceFile.Writer(fs, job, path,
+		SequenceFile.Writer writer = null;
+		try {
+			writer = new SequenceFile.Writer(fs, job, path,
                 MatrixIndexes.class, MatrixCell.class);
 		
-		MatrixIndexes index = new MatrixIndexes(1, 1);
-		MatrixCell cell = new MatrixCell(0);
-		writer.append(index, cell);
-		writer.close();
+			MatrixIndexes index = new MatrixIndexes(1, 1);
+			MatrixCell cell = new MatrixCell(0);
+			writer.append(index, cell);
+		}
+		finally {
+			IOUtilFunctions.closeSilently(writer);
+		}
+		
+		IOUtilFunctions.deleteCrcFilesFromLocalFileSystem(fs, path);
 	}
 
-	/**
-	 * 
-	 * @param path
-	 * @param job
-	 * @param src
-	 * @param rlen
-	 * @param clen
-	 * @param brlen
-	 * @param bclen
-	 * @throws IOException
-	 */
 	@SuppressWarnings("deprecation")
 	protected void writeBinaryCellMatrixToHDFS( Path path, JobConf job, MatrixBlock src, long rlen, long clen, int brlen, int bclen )
 		throws IOException

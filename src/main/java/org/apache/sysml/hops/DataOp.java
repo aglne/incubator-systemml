@@ -19,24 +19,24 @@
 
 package org.apache.sysml.hops;
 
+import java.util.HashMap;
+import java.util.Map.Entry;
+
 import org.apache.sysml.conf.CompilerConfig.ConfigType;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.lops.Data;
 import org.apache.sysml.lops.Lop;
-import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.lops.LopProperties.ExecType;
+import org.apache.sysml.lops.LopsException;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
+import org.apache.sysml.runtime.controlprogram.caching.MatrixObject.UpdateType;
 import org.apache.sysml.runtime.matrix.MatrixCharacteristics;
 import org.apache.sysml.runtime.util.LocalFileUtils;
-
-import java.util.HashMap;
-import java.util.Map.Entry;
 
 
 public class DataOp extends Hop 
 {
-
 	private DataOpTypes _dataop;
 	private String _fileName = null;
 	
@@ -62,8 +62,19 @@ public class DataOp extends Hop
 	}
 	
 	/**
-	 *  READ operation for Matrix w/ dim1, dim2. 
+	 * READ operation for Matrix w/ dim1, dim2. 
 	 * This constructor does not support any expression in parameters
+	 * 
+	 * @param l ?
+	 * @param dt data type
+	 * @param vt value type
+	 * @param dop data operator type
+	 * @param fname file name
+	 * @param dim1 dimension 1
+	 * @param dim2 dimension 2
+	 * @param nnz number of non-zeros
+	 * @param rowsPerBlock rows per block
+	 * @param colsPerBlock cols per block
 	 */
 	public DataOp(String l, DataType dt, ValueType vt, DataOpTypes dop,
 			String fname, long dim1, long dim2, long nnz, long rowsPerBlock, long colsPerBlock) {
@@ -82,14 +93,20 @@ public class DataOp extends Hop
 	}
 
 	public DataOp(String l, DataType dt, ValueType vt, DataOpTypes dop,
-			String fname, long dim1, long dim2, long nnz, boolean updateInPlace, long rowsPerBlock, long colsPerBlock) {
+			String fname, long dim1, long dim2, long nnz, UpdateType update, long rowsPerBlock, long colsPerBlock) {
 		this(l, dt, vt, dop, fname, dim1, dim2, nnz, rowsPerBlock, colsPerBlock);
-		setUpdateInPlace(updateInPlace);
+		setUpdateType(update);
 	}
 
 	/**
 	 * READ operation for Matrix
 	 * This constructor supports expressions in parameters
+	 * 
+	 * @param l ?
+	 * @param dt data type
+	 * @param vt value type
+	 * @param dop data operator type
+	 * @param inputParameters input parameters
 	 */
 	public DataOp(String l, DataType dt, ValueType vt, 
 			DataOpTypes dop, HashMap<String, Hop> inputParameters) {
@@ -127,26 +144,16 @@ public class DataOp extends Hop
 			setInputFormatType(FileFormatTypes.BINARY);
 	}
 	
-	// CHECKPOINT operation
-	// This constructor does not support any expression in parameters
-	public DataOp(String l, DataType dt, ValueType vt, Hop in,
-			LiteralOp level, DataOpTypes dop, String fname) {
-		super(l, dt, vt);
-		_dataop = dop;
-		getInput().add(0, in);
-		getInput().add(1, level);
-		in.getParent().add(this);
-		level.getParent().add(this);
-		_fileName = fname;
-
-		if (dop == DataOpTypes.TRANSIENTWRITE || dop == DataOpTypes.FUNCTIONOUTPUT )
-			setInputFormatType(FileFormatTypes.BINARY);
-	}
-	
-	
 	/**
 	 *  WRITE operation for Matrix
 	 *  This constructor supports expression in parameters
+	 * 
+	 * @param l ?
+	 * @param dt data type
+	 * @param vt value type
+	 * @param dop data operator type
+	 * @param in high-level operator
+	 * @param inputParameters input parameters
 	 */
 	public DataOp(String l, DataType dt, ValueType vt, 
 		DataOpTypes dop, Hop in, HashMap<String, Hop> inputParameters) {
@@ -186,11 +193,11 @@ public class DataOp extends Hop
 		_dataop = type;
 	}
 	
-	public void setOutputParams(long dim1, long dim2, long nnz, boolean updateInPlace, long rowsPerBlock, long colsPerBlock) {
+	public void setOutputParams(long dim1, long dim2, long nnz, UpdateType update, long rowsPerBlock, long colsPerBlock) {
 		setDim1(dim1);
 		setDim2(dim2);
 		setNnz(nnz);
-		setUpdateInPlace(updateInPlace);
+		setUpdateType(update);
 		setRowsInBlock(rowsPerBlock);
 		setColsInBlock(colsPerBlock);
 	}
@@ -238,7 +245,7 @@ public class DataOp extends Hop
 			case PERSISTENTREAD:
 				l = new Data(HopsData2Lops.get(_dataop), null, inputLops, getName(), null, 
 						getDataType(), getValueType(), false, getInputFormatType());
-				l.getOutputParameters().setDimensions(getDim1(), getDim2(), _inRowsInBlock, _inColsInBlock, getNnz(), getUpdateInPlace());
+				l.getOutputParameters().setDimensions(getDim1(), getDim2(), _inRowsInBlock, _inColsInBlock, getNnz(), getUpdateType());
 				break;
 				
 			case PERSISTENTWRITE:
@@ -327,23 +334,6 @@ public class DataOp extends Hop
 		return s;
 	}
 
-	public void printMe() throws HopsException {
-		if (LOG.isDebugEnabled()){
-			if (getVisited() != VisitStatus.DONE) {
-				super.printMe();
-				LOG.debug("  DataOp: " + _dataop);
-				if (_fileName != null) {
-					LOG.debug(" file: " + _fileName);
-				}
-				LOG.debug(" format: " + getInputFormatType());
-				for (Hop h : getInput()) {
-					h.printMe();
-				}
-			}
-			setVisited(VisitStatus.DONE);
-		}
-	}
-
 	@Override
 	public boolean allowsAllExecTypes()
 	{
@@ -374,13 +364,13 @@ public class DataOp extends Hop
 					ret = 0;
 			}
 		}
-		else //MATRIX 
+		else //MATRIX / FRAME
 		{
 			if(   _dataop == DataOpTypes.PERSISTENTREAD 
 			   || _dataop == DataOpTypes.TRANSIENTREAD ) 
 			{
 				double sparsity = OptimizerUtils.getSparsity(dim1, dim2, nnz);
-				ret = OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, sparsity);	
+				ret = OptimizerUtils.estimateSizeExactSparsity(dim1, dim2, sparsity);
 			}
 			// output memory estimate is not required for "write" nodes (just input)
 		}
@@ -436,7 +426,7 @@ public class DataOp extends Hop
 			checkAndSetForcedPlatform();
 
 			//additional check for write only
-			if( getDataType()==DataType.SCALAR )
+			if( getDataType()==DataType.SCALAR || (getDataType()==DataType.FRAME && REMOTE==ExecType.MR) )
 				_etypeForced = ExecType.CP;
 			
 			if( _etypeForced != null ) 			
@@ -568,4 +558,25 @@ public class DataOp extends Hop
 		
 		return ret;
 	}
+
+	/**
+	 * Remove an input from the list of inputs and from the parameter index map.
+	 * Parameter index map values higher than the index of the removed input
+	 * will be decremented by one.
+	 * 
+	 * @param inputName The name of the input to remove
+	 */
+	public void removeInput(String inputName) {
+
+		int inputIndex = getParameterIndex(inputName);
+		_input.remove(inputIndex);
+		_paramIndexMap.remove(inputName);
+
+		for (Entry<String, Integer> entry : _paramIndexMap.entrySet()) {
+			if (entry.getValue() > inputIndex) {
+				_paramIndexMap.put(entry.getKey(), (entry.getValue() - 1));
+			}
+		}
+	}
+
 }

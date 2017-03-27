@@ -36,18 +36,13 @@ public class Modulus extends ValueFunction
 	private IntegerDivide _intdiv = null;
 	
 	private Modulus() {
-		_intdiv = IntegerDivide.getIntegerDivideFnObject();
+		_intdiv = IntegerDivide.getFnObject();
 	}
 	
-	public static Modulus getModulusFnObject() {
+	public static Modulus getFnObject() {
 		if ( singleObj == null )
 			singleObj = new Modulus();
 		return singleObj;
-	}
-	
-	public Object clone() throws CloneNotSupportedException {
-		// cloning is not supported for singleton classes
-		throw new CloneNotSupportedException();
 	}
 
 	@Override
@@ -58,24 +53,9 @@ public class Modulus extends ValueFunction
 	}
 
 	@Override
-	public double execute(double in1, long in2) {
-		if( in2==0 )
-			return Double.NaN;
-		return in1 - _intdiv.execute(in1, in2)*in2;
-	}
-
-	@Override
-	public double execute(long in1, double in2) {
-		if( in2==0.0 || in2==-0.0 )
-			return Double.NaN;
-		return in1 - _intdiv.execute(in1, in2)*in2;
-	}
-
-	@Override
 	public double execute(long in1, long in2) {
 		if( in2==0 )
 			return Double.NaN;
 		return in1 - _intdiv.execute(in1, in2)*in2;
-	}	
-	
+	}		
 }

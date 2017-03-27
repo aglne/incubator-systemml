@@ -20,26 +20,22 @@
 package org.apache.sysml.hops.cost;
 
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.Instruction;
 
-/**
- * 
- */
 public class CostEstimatorNumMRJobs extends CostEstimator
 {
 
 	
 	@Override
 	protected double getCPInstTimeEstimate( Instruction inst, VarStats[] vs, String[] args  ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		return 0;
 	}
 	
 	@Override
 	protected double getMRJobInstTimeEstimate( Instruction inst, VarStats[] vs, String[] args  ) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException
+		throws DMLRuntimeException
 	{
 		return 1;
 	}

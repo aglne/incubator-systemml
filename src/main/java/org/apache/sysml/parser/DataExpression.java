@@ -29,17 +29,19 @@ import java.util.Map.Entry;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.wink.json4j.JSONArray;
-import org.apache.wink.json4j.JSONObject;
 import org.apache.sysml.conf.CompilerConfig.ConfigType;
 import org.apache.sysml.conf.ConfigurationManager;
 import org.apache.sysml.hops.DataGenOp;
 import org.apache.sysml.parser.LanguageException.LanguageErrorCodes;
+import org.apache.sysml.parser.common.CustomErrorListener;
 import org.apache.sysml.runtime.controlprogram.parfor.stat.InfrastructureAnalyzer;
+import org.apache.sysml.runtime.io.IOUtilFunctions;
 import org.apache.sysml.runtime.util.LocalFileUtils;
 import org.apache.sysml.runtime.util.MapReduceTool;
 import org.apache.sysml.runtime.util.UtilFunctions;
 import org.apache.sysml.utils.JSONHelper;
+import org.apache.wink.json4j.JSONArray;
+import org.apache.wink.json4j.JSONObject;
 
 
 public class DataExpression extends DataIdentifier 
@@ -76,6 +78,8 @@ public class DataExpression extends DataIdentifier
 	public static final String VALUETYPEPARAM = "value_type";
 	public static final String DESCRIPTIONPARAM = "description";
 	public static final String AUTHORPARAM = "author";
+	public static final String SCHEMAPARAM = "schema";
+	public static final String CREATEDPARAM = "created";
 
 	// Parameter names relevant to reading/writing delimited/csv files
 	public static final String DELIM_DELIMITER = "sep";
@@ -96,14 +100,15 @@ public class DataExpression extends DataIdentifier
 	
 	// Valid parameter names in a metadata file
 	public static final String[] READ_VALID_MTD_PARAM_NAMES = 
-		{ IO_FILENAME, READROWPARAM, READCOLPARAM, READNUMNONZEROPARAM, FORMAT_TYPE, 
-			ROWBLOCKCOUNTPARAM, COLUMNBLOCKCOUNTPARAM, DATATYPEPARAM, VALUETYPEPARAM, DESCRIPTIONPARAM,
+		{ IO_FILENAME, READROWPARAM, READCOLPARAM, READNUMNONZEROPARAM, FORMAT_TYPE,
+			ROWBLOCKCOUNTPARAM, COLUMNBLOCKCOUNTPARAM, DATATYPEPARAM, VALUETYPEPARAM, SCHEMAPARAM, DESCRIPTIONPARAM,
+			AUTHORPARAM, CREATEDPARAM,
 			// Parameters related to delimited/csv files.
 			DELIM_FILL_VALUE, DELIM_DELIMITER, DELIM_FILL, DELIM_HAS_HEADER_ROW, DELIM_NA_STRINGS
 		}; 
 
 	public static final String[] READ_VALID_PARAM_NAMES = 
-	{	IO_FILENAME, READROWPARAM, READCOLPARAM, FORMAT_TYPE, DATATYPEPARAM, VALUETYPEPARAM,
+	{	IO_FILENAME, READROWPARAM, READCOLPARAM, FORMAT_TYPE, DATATYPEPARAM, VALUETYPEPARAM, SCHEMAPARAM,
 		ROWBLOCKCOUNTPARAM, COLUMNBLOCKCOUNTPARAM, READNUMNONZEROPARAM, 
 			// Parameters related to delimited/csv files.
 			DELIM_FILL_VALUE, DELIM_DELIMITER, DELIM_FILL, DELIM_HAS_HEADER_ROW, DELIM_NA_STRINGS
@@ -129,10 +134,11 @@ public class DataExpression extends DataIdentifier
 	public void setCheckMetadata(boolean checkMetadata) {
 		_checkMetadata = checkMetadata;
 	}
-	
+
+
 	public static DataExpression getDataExpression(String functionName, ArrayList<ParameterExpression> passedParamExprs, 
-				String filename, int blp, int bcp, int elp, int ecp) throws DMLParseException {
-		
+				String filename, int blp, int bcp, int elp, int ecp, CustomErrorListener errorListener) throws LanguageException
+	{	
 		if (functionName == null || passedParamExprs == null)
 			return null;
 		
@@ -157,14 +163,15 @@ public class DataExpression extends DataIdentifier
 			
 			// validate the filename is the first parameter
 			if (passedParamExprs.size() < 1){
-				// throw exception -- must be filename as first parameter
-				throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "read method must have at least filename parameter");
+				errorListener.validationError(blp, bcp, "read method must have at least filename parameter");
+				return null;
 			}
 			
 			ParameterExpression pexpr = (passedParamExprs.size() == 0) ? null : passedParamExprs.get(0);
 			
 			if ( (pexpr != null) &&  (!(pexpr.getName() == null) || (pexpr.getName() != null && pexpr.getName().equalsIgnoreCase(DataExpression.IO_FILENAME)))){
-				throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "first parameter to read statement must be filename");
+				errorListener.validationError(blp, bcp, "first parameter to read statement must be filename");
+				return null;
 			} else if( pexpr != null ){
 				dataExpr.addVarParam(DataExpression.IO_FILENAME, pexpr.getExpr());
 			}
@@ -175,7 +182,8 @@ public class DataExpression extends DataIdentifier
 				Expression currExpr = passedParamExprs.get(i).getExpr();
 				
 				if (dataExpr.getVarParam(currName) != null){
-					throw new DMLParseException(dataExpr.getFilename(), currExpr.printErrorLocation() + "attempted to add IOStatement parameter " + currName + " more than once");
+					errorListener.validationError(blp, bcp, "attempted to add IOStatement parameter " + currName + " more than once");
+					return null;
 				}
 				// verify parameter names for read function
 				boolean isValidName = false;
@@ -184,7 +192,8 @@ public class DataExpression extends DataIdentifier
 						isValidName = true;
 				}
 				if (!isValidName){
-					throw new DMLParseException(dataExpr.getFilename(), currExpr.printErrorLocation() + "attempted to add invalid read statement parameter " + currName);
+					errorListener.validationError(blp, bcp, "attempted to add invalid read statement parameter " + currName);
+					return null;
 				}	
 				dataExpr.addVarParam(currName, currExpr);
 			}				
@@ -200,9 +209,8 @@ public class DataExpression extends DataIdentifier
 				String pname = currExpr.getName();
 				Expression pexpr = currExpr.getExpr();
 				if (pname == null){
-					throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "for Rand Statment all arguments must be named parameters");	
-					//LOG.error(dataExpr.printErrorLocation(beginLine, beginColumn) + "for Rand Statment all arguments must be named parameters");
-					//throw new ParseException(dataExpr.printErrorLocation(beginLine, beginColumn) + "for Rand Statment all arguments must be named parameters");	
+					errorListener.validationError(blp, bcp, "for rand statement, all arguments must be named parameters");
+					return null;
 				}
 				dataExpr.addRandExprParam(pname, pexpr); 
 			}
@@ -224,16 +232,21 @@ public class DataExpression extends DataIdentifier
 
 			// check whether named or unnamed parameters are used
 			if (passedParamExprs.size() < 3){
-				throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "for matrix statement, must specify at least 3 arguments (in order): data, rows, cols");
+				errorListener.validationError(blp, bcp, "for matrix statement, must specify at least 3 arguments: data, rows, cols");
+				return null;
 			}
 			
 			if (unnamedParamCount > 1){
 				
-				if (namedParamCount > 0)
-					throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "for matrix statement, cannot mix named and unnamed parameters");
+				if (namedParamCount > 0) {
+					errorListener.validationError(blp, bcp, "for matrix statement, cannot mix named and unnamed parameters");
+					return null;
+				}
 				
-				if (unnamedParamCount < 3)
-					throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "for matrix statement, must specify at least 3 arguments (in order): data, rows, cols");
+				if (unnamedParamCount < 3) {
+					errorListener.validationError(blp, bcp, "for matrix statement, must specify at least 3 arguments: data, rows, cols");
+					return null;
+				}
 				
 
 				// assume: data, rows, cols, [byRow], [dimNames]
@@ -247,31 +260,32 @@ public class DataExpression extends DataIdentifier
 				if (unnamedParamCount == 5)
 					dataExpr.addMatrixExprParam(DataExpression.RAND_DIMNAMES,passedParamExprs.get(4).getExpr());
 				
-				if (unnamedParamCount > 5)
-					throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "for matrix statement, at most 5 arguments supported (in order): data, rows, cols, byrow, dimname");
-								   
+				if (unnamedParamCount > 5) {
+					errorListener.validationError(blp, bcp, "for matrix statement, at most 5 arguments supported: data, rows, cols, byrow, dimname");
+					return null;
+				}
 				
 			} else {
 				// handle first parameter, which is data and may be unnamed
 				ParameterExpression firstParam = passedParamExprs.get(0);
 				if (firstParam.getName() != null && !firstParam.getName().equals(DataExpression.RAND_DATA)){
-					// throw exception -- must be filename as first parameter
-					throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "matrix method must have data parameter as first parameter or unnamed parameter");
+					errorListener.validationError(blp, bcp, "matrix method must have data parameter as first parameter or unnamed parameter");
+					return null;
 				} else {
 					dataExpr.addMatrixExprParam(DataExpression.RAND_DATA, passedParamExprs.get(0).getExpr());
 				}
 				
 				for (int i=1; i<passedParamExprs.size(); i++){
 					if (passedParamExprs.get(i).getName() == null){
-						// throw exception -- cannot mix named and unnamed parameters
-						throw new DMLParseException(dataExpr.getFilename(), dataExpr.printErrorLocation(blp, bcp) + "for matrix statement, cannot mix named and unnamed parameters, only data parameter can be unnammed");
+						errorListener.validationError(blp, bcp, "for matrix statement, cannot mix named and unnamed parameters, only data parameter can be unnammed");
+						return null;
 					} else {
-						dataExpr.addMatrixExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr()); 	
+						dataExpr.addMatrixExprParam(passedParamExprs.get(i).getName(), passedParamExprs.get(i).getExpr());
 					}
 				}
 			}
 			dataExpr.setMatrixDefault();
-		} // else if (functionName.equals("matrix")){
+		}
 		
 		if (dataExpr != null) {
 			dataExpr.setAllPositions(filename, blp, bcp, elp, ecp);
@@ -280,7 +294,8 @@ public class DataExpression extends DataIdentifier
 	
 	} // end method getBuiltinFunctionExpression
 	
-	public void addRandExprParam(String paramName, Expression paramValue) throws DMLParseException
+	public void addRandExprParam(String paramName, Expression paramValue) 
+		throws LanguageException
 	{
 		// check name is valid
 		boolean found = false;
@@ -293,15 +308,14 @@ public class DataExpression extends DataIdentifier
 			}
 		}
 		if (!found){
-			
-			throw new DMLParseException(paramValue.getFilename(), paramValue.printErrorLocation() + "unexpected parameter \"" + paramName +
+			raiseValidateError("unexpected parameter \"" + paramName +
 					"\". Legal parameters for Rand statement are " 
 					+ "(capitalization-sensitive): " 	+ RAND_ROWS 	
 					+ ", " + RAND_COLS		+ ", " + RAND_MIN + ", " + RAND_MAX  	
 					+ ", " + RAND_SPARSITY + ", " + RAND_SEED     + ", " + RAND_PDF + ", " + RAND_LAMBDA);
 		}
 		if (getVarParam(paramName) != null){
-			throw new DMLParseException(paramValue.getFilename(), paramValue.printErrorLocation() + "attempted to add Rand statement parameter " + paramValue + " more than once");
+			raiseValidateError("attempted to add Rand statement parameter " + paramValue + " more than once");
 		}
 		// Process the case where user provides double values to rows or cols
 		if (paramName.equals(RAND_ROWS) && paramValue instanceof DoubleIdentifier){
@@ -321,7 +335,8 @@ public class DataExpression extends DataIdentifier
 		
 	}
 	
-	public void addMatrixExprParam(String paramName, Expression paramValue) throws DMLParseException
+	public void addMatrixExprParam(String paramName, Expression paramValue) 
+		throws LanguageException
 	{
 		// check name is valid
 		boolean found = false;
@@ -334,14 +349,13 @@ public class DataExpression extends DataIdentifier
 		}
 		
 		if (!found){
-			
-			throw new DMLParseException(paramValue.getFilename(), paramValue.printErrorLocation() + "unexpected parameter \"" + paramName +
+			raiseValidateError("unexpected parameter \"" + paramName +
 					"\". Legal parameters for  matrix statement are " 
 					+ "(capitalization-sensitive): " 	+ RAND_DATA + ", " + RAND_ROWS 	
 					+ ", " + RAND_COLS		+ ", " + RAND_BY_ROW);
 		}
-		if (getVarParam(paramName) != null){
-			throw new DMLParseException(paramValue.getFilename(), paramValue.printErrorLocation() + "attempted to add matrix statement parameter " + paramValue + " more than once");
+		if (getVarParam(paramName) != null) {
+			raiseValidateError("attempted to add matrix statement parameter " + paramValue + " more than once");
 		}
 		// Process the case where user provides double values to rows or cols
 		if (paramName.equals(RAND_ROWS) && paramValue instanceof DoubleIdentifier){
@@ -536,10 +550,6 @@ public class DataExpression extends DataIdentifier
 	/**
 	 * Validate parse tree : Process Data Expression in an assignment
 	 * statement
-	 *  
-	 * @throws LanguageException
-	 * @throws ParseException 
-	 * @throws IOException 
 	 */
 	@Override
 	public void validateExpression(HashMap<String, DataIdentifier> ids, HashMap<String, ConstIdentifier> currConstVars, boolean conditional)
@@ -764,6 +774,7 @@ public class DataExpression extends DataIdentifier
 		        // if the MTD file exists, check the values specified in read statement match values in metadata MTD file
 		        if (configObject != null){
 		        	parseMetaDataFileParameters(mtdFileName, configObject, conditional);
+		        	inferredFormatType = true;
 		        }
 		        else {
 		        	LOG.warn("Metadata file: " + new Path(mtdFileName) + " not provided");
@@ -792,9 +803,10 @@ public class DataExpression extends DataIdentifier
 								|| key.equals(DELIM_FILL) || key.equals(DELIM_FILL_VALUE)
 								|| key.equals(READROWPARAM) || key.equals(READCOLPARAM)
 								|| key.equals(READNUMNONZEROPARAM) || key.equals(DATATYPEPARAM) || key.equals(VALUETYPEPARAM)
-								)){
-							
+								|| key.equals(SCHEMAPARAM)) )
+						{	
 							String msg = "Only parameters allowed are: " + IO_FILENAME     + "," 
+									   + SCHEMAPARAM + "," 
 									   + DELIM_HAS_HEADER_ROW   + "," 
 									   + DELIM_DELIMITER 	+ ","
 									   + DELIM_FILL 		+ ","
@@ -802,7 +814,7 @@ public class DataExpression extends DataIdentifier
 									   + READROWPARAM     + "," 
 									   + READCOLPARAM;
 							
-							raiseValidateError("Invalid parameter " + key + " in read.csv statement: " +
+							raiseValidateError("Invalid parameter " + key + " in read statement: " +
 									toString() + ". " + msg, conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 						}
 					}
@@ -915,11 +927,6 @@ public class DataExpression extends DataIdentifier
 					} else if (!isCSV && ((dim1 != null) || (dim2 != null))) {
 						raiseValidateError("Partial dimension information in read statement", conditional, LanguageErrorCodes.INVALID_PARAMETERS);
 					}	
-				}
-				
-				// Table must be in CSV format
-				if ( !isMatrix && !getVarParam(FORMAT_TYPE).toString().equalsIgnoreCase("csv") ) {
-					raiseValidateError("Input data of type 'table' must be in CSV format. Invalid format '" + getVarParam(FORMAT_TYPE)+ "' in statement: " + this.toString(), conditional);
 				}
 				
 				// initialize block dimensions to UNKNOWN 
@@ -1158,10 +1165,7 @@ public class DataExpression extends DataIdentifier
 				raiseValidateError("for Rand statement " + RAND_MIN + " has incorrect value type", conditional);
 			}
 			
-			//parameters w/o support for variable inputs (requires double/int or string constants)
-			if (!(getVarParam(RAND_SPARSITY) instanceof DoubleIdentifier || getVarParam(RAND_SPARSITY) instanceof IntIdentifier)) {
-				raiseValidateError("for Rand statement " + RAND_SPARSITY + " has incorrect value type", conditional);
-			}
+			// Since sparsity can be arbitrary expression (SYSTEMML-515), no validation check for DoubleIdentifier/IntIdentifier required.
 			
 			if (!(getVarParam(RAND_PDF) instanceof StringIdentifier)) {
 				raiseValidateError("for Rand statement " + RAND_PDF + " has incorrect value type", conditional);
@@ -1679,11 +1683,7 @@ public class DataExpression extends DataIdentifier
 		}
 		return;
 	}
-	
-	/**
-	 * 
-	 * @param currConstVars
-	 */
+
 	private void performConstantPropagationRand( HashMap<String, ConstIdentifier> currConstVars )
 	{
 		//here, we propagate constants for all rand parameters that are required during validate.
@@ -1692,11 +1692,7 @@ public class DataExpression extends DataIdentifier
 		//replace data identifiers with const identifiers
 		performConstantPropagation(currConstVars, paramNamesForEval);
 	}
-	
-	/**
-	 * 
-	 * @param currConstVars
-	 */
+
 	private void performConstantPropagationReadWrite( HashMap<String, ConstIdentifier> currConstVars )
 	{
 		//here, we propagate constants for all read/write parameters that are required during validate.
@@ -1705,12 +1701,7 @@ public class DataExpression extends DataIdentifier
 		//replace data identifiers with const identifiers
 		performConstantPropagation(currConstVars, paramNamesForEval);
 	}
-	
-	/**
-	 * 
-	 * @param currConstVars
-	 * @param paramNames
-	 */
+
 	private void performConstantPropagation( HashMap<String, ConstIdentifier> currConstVars, String[] paramNames )
 	{
 		for( String paramName : paramNames )
@@ -1776,15 +1767,26 @@ public class DataExpression extends DataIdentifier
 		sb.append(_opcode.toString());
 		sb.append("(");
 
+		boolean first = true;
 		for(Entry<String,Expression> e : _varParams.entrySet()) {
 			String key = e.getKey();
 			Expression expr = e.getValue();
-			sb.append(",");
+			if (!first) {
+				sb.append(", ");
+			} else {
+				first = false;
+			}
 			sb.append(key);
 			sb.append("=");
-			sb.append(expr);
+			if (expr instanceof StringIdentifier) {
+				sb.append("\"");
+				sb.append(expr);
+				sb.append("\"");
+			} else {
+				sb.append(expr);
+			}
 		}
-		sb.append(" )");
+		sb.append(")");
 		return sb.toString();
 	}
 
@@ -1837,7 +1839,10 @@ public class DataExpression extends DataIdentifier
 			{
 				// if the read method does not specify parameter value, then add MTD metadata file value to parameter list
 				if (getVarParam(key.toString()) == null){
-					if ( !key.toString().equalsIgnoreCase(DESCRIPTIONPARAM) ) {
+					if (( !key.toString().equalsIgnoreCase(DESCRIPTIONPARAM) ) &&
+							( !key.toString().equalsIgnoreCase(AUTHORPARAM) ) &&
+							( !key.toString().equalsIgnoreCase(CREATEDPARAM) ) )
+					{
 						StringIdentifier strId = new StringIdentifier(val.toString(),
 								this.getFilename(), this.getBeginLine(), this.getBeginColumn(), 
 								this.getEndLine(), this.getEndColumn());
@@ -1904,108 +1909,56 @@ public class DataExpression extends DataIdentifier
     	}
 	}
 	
-	/**
-	 * 
-	 * @param filename
-	 * @return
-	 * @throws LanguageException
-	 */
 	public JSONObject readMetadataFile(String filename, boolean conditional) 
 		throws LanguageException 
 	{
 		JSONObject retVal = null;
-		boolean exists = false;
-		FileSystem fs = null;
-		
-		try {
-			fs = FileSystem.get(ConfigurationManager.getCachedJobConf());
-		} catch (Exception e){
-			raiseValidateError("could not read the configuration file: "+e.getMessage(), false);
-		}
-		
-		Path pt = new Path(filename);
-		try {
-			if (fs.exists(pt)){
-				exists = true;
-			}
-		} catch (Exception e){
-			exists = false;
-		}
-	
-		boolean isDirBoolean = false;
-		try {
-			if (exists && fs.getFileStatus(pt).isDirectory())
-				isDirBoolean = true;
-			else
-				isDirBoolean = false;
-		}
-		catch(Exception e){
-			raiseValidateError("error validing whether path " + pt.toString() + " is directory or not: "+e.getMessage(), conditional);
-		}
+		boolean exists = MapReduceTool.existsFileOnHDFS(filename);
+		boolean isDir = MapReduceTool.isDirectory(filename);
 		
 		// CASE: filename is a directory -- process as a directory
-		if (exists && isDirBoolean){
-			
-			// read directory contents
+		if( exists && isDir ) 
+		{
 			retVal = new JSONObject();
-			
-			FileStatus[] stats = null;
-			
-			try {
-				stats = fs.listStatus(pt);
-			}
-			catch (Exception e){
-				raiseValidateError("for MTD file in directory, error reading directory with MTD file " + pt.toString() + ": " + e.getMessage(), conditional);
-			}
-			
-			for(FileStatus stat : stats){
+			for(FileStatus stat : MapReduceTool.getDirectoryListing(filename)) {
 				Path childPath = stat.getPath(); // gives directory name
-				if (childPath.getName().startsWith("part")){
-					
-					BufferedReader br = null;
-					try {
-						br = new BufferedReader(new InputStreamReader(fs.open(childPath)));
-					}
-					catch(Exception e){
-						raiseValidateError("for MTD file in directory, error reading part of MTD file with path " + childPath.toString() + ": " + e.getMessage(), conditional);
-					}
-					
-					JSONObject childObj = null;
-					try {
-						childObj = JSONHelper.parse(br);
-					}
-					catch(Exception e){
-						raiseValidateError("for MTD file in directory, error parsing part of MTD file with path " + childPath.toString() + ": " + e.getMessage(), conditional);
-					}
-					
-			    	for( Object obj : childObj.entrySet() ){
+				if( !childPath.getName().startsWith("part") )
+					continue;
+				BufferedReader br = null;
+				try {
+					FileSystem fs = FileSystem.get(ConfigurationManager.getCachedJobConf());
+					br = new BufferedReader(new InputStreamReader(fs.open(childPath)));
+					JSONObject childObj = JSONHelper.parse(br);
+					for( Object obj : childObj.entrySet() ){
 						@SuppressWarnings("unchecked")
 						Entry<Object,Object> e = (Entry<Object, Object>) obj;
 			    		Object key = e.getKey();
 			    		Object val = e.getValue();
 			    		retVal.put(key, val);
-					}
+					}						
 				}
-			} // end for 
+				catch(Exception e){
+					raiseValidateError("for MTD file in directory, error parting part of MTD file with path " + childPath.toString() + ": " + e.getMessage(), conditional);
+				}
+				finally {
+					IOUtilFunctions.closeSilently(br);
+				}
+			} 
 		}
-		
 		// CASE: filename points to a file
-		else if (exists){
-			
+		else if (exists) 
+		{
 			BufferedReader br = null;
-			
-			// try reading MTD file
 			try {
-				br=new BufferedReader(new InputStreamReader(fs.open(pt)));
-			} catch (Exception e){
-				raiseValidateError("error reading MTD file with path " + pt.toString() + ": " + e.getMessage(), conditional);
+				FileSystem fs = FileSystem.get(ConfigurationManager.getCachedJobConf());
+				br = new BufferedReader(new InputStreamReader(fs.open(new Path(filename))));
+				retVal = new JSONObject(br);
+			} 
+			catch (Exception e){
+				raiseValidateError("error parsing MTD file with path " + filename + ": " + e.getMessage(), conditional);
 			}
-			
-			// try parsing MTD file
-			try {
-				retVal =  JSONHelper.parse(br);	
-			} catch (Exception e){
-				raiseValidateError("error parsing MTD file with path " + pt.toString() + ": " + e.getMessage(), conditional);
+			finally {
+				IOUtilFunctions.closeSilently(br);
 			}
 		}
 			
@@ -2047,10 +2000,8 @@ public class DataExpression extends DataIdentifier
 						raiseValidateError("MatrixMarket files must begin with a header line.", conditional);
 					}
 				}
-				finally
-				{
-					if( in != null )
-						in.close();
+				finally {
+					IOUtilFunctions.closeSilently(in);
 				}
 			}
 			else {
@@ -2071,113 +2022,60 @@ public class DataExpression extends DataIdentifier
 	{
 		// Check the MTD file exists. if there is an MTD file, return false.
 		JSONObject mtdObject = readMetadataFile(mtdFileName, conditional);
-	    
-		if (mtdObject != null)
+	    if (mtdObject != null)
 			return false;
 		
-		boolean exists = false;
-		FileSystem fs = null;
-		
-		try {
-			fs = FileSystem.get(ConfigurationManager.getCachedJobConf());
-		} catch (Exception e){
-			LOG.error(this.printErrorLocation() + "could not read the configuration file.");
-			throw new LanguageException(this.printErrorLocation() + "could not read the configuration file.", e);
-		}
-		
-		Path pt = new Path(inputFileName);
-		try {
-			if (fs.exists(pt)){
-				exists = true;
-			}
-		} catch (Exception e){
-			LOG.error(this.printErrorLocation() + "file " + inputFileName + " not found");
-			throw new LanguageException(this.printErrorLocation() + "file " + inputFileName + " not found");
-		}
-	
-		try {
-			// CASE: filename is a directory -- process as a directory
-			if (exists && fs.getFileStatus(pt).isDirectory()){
-				
-				// currently, only MM files as files are supported.  So, if file is directory, then infer 
-				// likely not MM file
-				return false;
-			}
-			// CASE: filename points to a file
-			else if (exists){
-				
-				//BufferedReader in = new BufferedReader(new FileReader(filename));
-				BufferedReader in = new BufferedReader(new InputStreamReader(fs.open(pt)));
-				
+		if( MapReduceTool.existsFileOnHDFS(inputFileName) 
+			&& !MapReduceTool.isDirectory(inputFileName)  )
+		{
+			BufferedReader in = null;
+			try {
+				FileSystem fs = FileSystem.get(ConfigurationManager.getCachedJobConf());
+				in = new BufferedReader(new InputStreamReader(fs.open(new Path(inputFileName))));
 				String headerLine = new String("");			
 				if (in.ready())
 					headerLine = in.readLine();
-				in.close();
-			
-				// check that headerline starts with "%%"
-				// will infer malformed 
-				if( headerLine !=null && headerLine.startsWith("%%") )
-					return true;
-				else
-					return false;
+				return (headerLine !=null && headerLine.startsWith("%%"));
 			}
-			else {
-				return false;
+			catch(Exception ex) {
+				throw new LanguageException("Failed to read mtd file.", ex);
 			}
-			
-		} catch (Exception e){
-			return false;
+			finally {
+				IOUtilFunctions.closeSilently(in);
+			}
 		}
+		
+		return false;
 	}
 	
 	public boolean checkHasDelimitedFormat(String filename, boolean conditional)
 		throws LanguageException 
 	{
-	 
-        // if the MTD file exists, check the format is not binary 
+		// if the MTD file exists, check the format is not binary 
 		JSONObject mtdObject = readMetadataFile(filename + ".mtd", conditional);
-        if (mtdObject != null){
-        	String formatTypeString = (String)JSONHelper.get(mtdObject,FORMAT_TYPE);
-            if (formatTypeString != null ) {
-            	if ( formatTypeString.equalsIgnoreCase(FORMAT_TYPE_VALUE_CSV) )
-            		return true;
-            	else
-            		return false;
-        	}
-        }
-        return false;
-
-        // The file format must be specified either in .mtd file or in read() statement
-        // Therefore, one need not actually read the data to infer the format.
+		if (mtdObject != null) {
+			String formatTypeString = (String)JSONHelper.get(mtdObject,FORMAT_TYPE);
+			return (formatTypeString != null ) && 
+				formatTypeString.equalsIgnoreCase(FORMAT_TYPE_VALUE_CSV);
+		}
+		return false;
+		// The file format must be specified either in .mtd file or in read() statement
+		// Therefore, one need not actually read the data to infer the format.
 	}
 	
-	/**
-	 * 
-	 * @return
-	 */
 	public boolean isCSVReadWithUnknownSize()
 	{
-		boolean ret = false;
-		
 		Expression format = getVarParam(FORMAT_TYPE);
-		if( _opcode == DataOp.READ && format!=null && format.toString().equalsIgnoreCase(FORMAT_TYPE_VALUE_CSV) )
-		{
+		if( _opcode == DataOp.READ && format!=null && format.toString().equalsIgnoreCase(FORMAT_TYPE_VALUE_CSV) ) {
 			Expression rows = getVarParam(READROWPARAM);
 			Expression cols = getVarParam(READCOLPARAM);
-			if(   (rows==null || Long.parseLong(rows.toString())<0)
-				||(cols==null || Long.parseLong(cols.toString())<0) )
-			{
-				ret = true;
-			}
+			return (rows==null || Long.parseLong(rows.toString())<0)
+				||(cols==null || Long.parseLong(cols.toString())<0);
 		}
 		
-		return ret;
+		return false;
 	}
 	
-	/**
-	 * 
-	 * @return
-	 */
 	public boolean isRead()
 	{
 		return (_opcode == DataOp.READ);

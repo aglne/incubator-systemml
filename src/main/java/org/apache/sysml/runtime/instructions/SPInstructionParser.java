@@ -22,6 +22,7 @@ package org.apache.sysml.runtime.instructions;
 import java.util.HashMap;
 
 import org.apache.sysml.lops.Checkpoint;
+import org.apache.sysml.lops.Compression;
 import org.apache.sysml.lops.DataGen;
 import org.apache.sysml.lops.WeightedCrossEntropy;
 import org.apache.sysml.lops.WeightedCrossEntropyR;
@@ -34,7 +35,6 @@ import org.apache.sysml.lops.WeightedSquaredLossR;
 import org.apache.sysml.lops.WeightedUnaryMM;
 import org.apache.sysml.lops.WeightedUnaryMMR;
 import org.apache.sysml.runtime.DMLRuntimeException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.instructions.spark.AggregateTernarySPInstruction;
 import org.apache.sysml.runtime.instructions.spark.AggregateUnarySPInstruction;
 import org.apache.sysml.runtime.instructions.spark.AppendGAlignedSPInstruction;
@@ -46,18 +46,23 @@ import org.apache.sysml.runtime.instructions.spark.BinUaggChainSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.BuiltinBinarySPInstruction;
 import org.apache.sysml.runtime.instructions.spark.BuiltinUnarySPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CSVReblockSPInstruction;
+import org.apache.sysml.runtime.instructions.spark.CastSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CentralMomentSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CheckpointSPInstruction;
+import org.apache.sysml.runtime.instructions.spark.CompressionSPInstruction;
+import org.apache.sysml.runtime.instructions.spark.ConvolutionSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CovarianceSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CpmmSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CumulativeAggregateSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.CumulativeOffsetSPInstruction;
+import org.apache.sysml.runtime.instructions.spark.IndexingSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.MapmmChainSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.MapmmSPInstruction;
-import org.apache.sysml.runtime.instructions.spark.MatrixIndexingSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.MatrixReshapeSPInstruction;
+import org.apache.sysml.runtime.instructions.spark.MultiReturnParameterizedBuiltinSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.PMapmmSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.ParameterizedBuiltinSPInstruction;
+import org.apache.sysml.runtime.instructions.spark.PlusMultSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.PmmSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.QuantilePickSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.QuaternarySPInstruction;
@@ -68,7 +73,9 @@ import org.apache.sysml.runtime.instructions.spark.ReorgSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.RmmSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.SPInstruction;
 import org.apache.sysml.runtime.instructions.spark.SPInstruction.SPINSTRUCTION_TYPE;
+import org.apache.sysml.runtime.instructions.spark.SpoofSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.TernarySPInstruction;
+import org.apache.sysml.runtime.instructions.spark.Tsmm2SPInstruction;
 import org.apache.sysml.runtime.instructions.spark.TsmmSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.QuantileSortSPInstruction;
 import org.apache.sysml.runtime.instructions.spark.UaggOuterChainSPInstruction;
@@ -113,7 +120,8 @@ public class SPInstructionParser extends InstructionParser
 		//binary aggregate operators (matrix multiplication operators)
 		String2SPInstructionType.put( "mapmm"      , SPINSTRUCTION_TYPE.MAPMM);
 		String2SPInstructionType.put( "mapmmchain" , SPINSTRUCTION_TYPE.MAPMMCHAIN);
-		String2SPInstructionType.put( "tsmm"       , SPINSTRUCTION_TYPE.TSMM);
+		String2SPInstructionType.put( "tsmm"       , SPINSTRUCTION_TYPE.TSMM); //single-pass tsmm
+		String2SPInstructionType.put( "tsmm2"      , SPINSTRUCTION_TYPE.TSMM2); //multi-pass tsmm
 		String2SPInstructionType.put( "cpmm"   	   , SPINSTRUCTION_TYPE.CPMM);
 		String2SPInstructionType.put( "rmm"        , SPINSTRUCTION_TYPE.RMM);
 		String2SPInstructionType.put( "pmm"        , SPINSTRUCTION_TYPE.PMM);
@@ -125,7 +133,13 @@ public class SPInstructionParser extends InstructionParser
 		
 		//ternary aggregate operators
 		String2SPInstructionType.put( "tak+*"      , SPINSTRUCTION_TYPE.AggregateTernary);
+		String2SPInstructionType.put( "tack+*"     , SPINSTRUCTION_TYPE.AggregateTernary);
 
+		// Neural network operators
+		String2SPInstructionType.put( "conv2d",                 SPINSTRUCTION_TYPE.Convolution);
+		String2SPInstructionType.put( "conv2d_bias_add", SPINSTRUCTION_TYPE.Convolution);
+		String2SPInstructionType.put( "maxpooling",             SPINSTRUCTION_TYPE.Convolution);
+		String2SPInstructionType.put( "relu_maxpooling",          SPINSTRUCTION_TYPE.Convolution);
 		
 		String2SPInstructionType.put( "rangeReIndex"   	, SPINSTRUCTION_TYPE.MatrixIndexing);
 		String2SPInstructionType.put( "leftIndex"   	, SPINSTRUCTION_TYPE.MatrixIndexing);
@@ -147,7 +161,9 @@ public class SPInstructionParser extends InstructionParser
 		String2SPInstructionType.put( "1-*"  , SPINSTRUCTION_TYPE.ArithmeticBinary);
 		String2SPInstructionType.put( "^"    , SPINSTRUCTION_TYPE.ArithmeticBinary);
 		String2SPInstructionType.put( "^2"   , SPINSTRUCTION_TYPE.ArithmeticBinary); 
-		String2SPInstructionType.put( "*2"   , SPINSTRUCTION_TYPE.ArithmeticBinary); 
+		String2SPInstructionType.put( "*2"   , SPINSTRUCTION_TYPE.ArithmeticBinary);
+		String2SPInstructionType.put( "+*"   , SPINSTRUCTION_TYPE.ArithmeticBinary); 
+		String2SPInstructionType.put( "-*"   , SPINSTRUCTION_TYPE.ArithmeticBinary); 
 		String2SPInstructionType.put( "map+"    , SPINSTRUCTION_TYPE.ArithmeticBinary);
 		String2SPInstructionType.put( "map-"    , SPINSTRUCTION_TYPE.ArithmeticBinary);
 		String2SPInstructionType.put( "map*"    , SPINSTRUCTION_TYPE.ArithmeticBinary);
@@ -156,6 +172,8 @@ public class SPInstructionParser extends InstructionParser
 		String2SPInstructionType.put( "map%/%"  , SPINSTRUCTION_TYPE.ArithmeticBinary);
 		String2SPInstructionType.put( "map1-*"  , SPINSTRUCTION_TYPE.ArithmeticBinary);
 		String2SPInstructionType.put( "map^"    , SPINSTRUCTION_TYPE.ArithmeticBinary);
+		String2SPInstructionType.put( "map+*"   , SPINSTRUCTION_TYPE.ArithmeticBinary); 
+		String2SPInstructionType.put( "map-*"   , SPINSTRUCTION_TYPE.ArithmeticBinary); 
 		String2SPInstructionType.put( "map>"    , SPINSTRUCTION_TYPE.RelationalBinary);
 		String2SPInstructionType.put( "map>="   , SPINSTRUCTION_TYPE.RelationalBinary);
 		String2SPInstructionType.put( "map<"    , SPINSTRUCTION_TYPE.RelationalBinary);
@@ -177,6 +195,7 @@ public class SPInstructionParser extends InstructionParser
 	
 		// Spark-specific instructions
 		String2SPInstructionType.put( Checkpoint.OPCODE, SPINSTRUCTION_TYPE.Checkpoint);
+		String2SPInstructionType.put( Compression.OPCODE, SPINSTRUCTION_TYPE.Compression);
 		
 		// Builtin Instruction Opcodes 
 		String2SPInstructionType.put( "log"  , SPINSTRUCTION_TYPE.Builtin);
@@ -212,6 +231,9 @@ public class SPInstructionParser extends InstructionParser
 		String2SPInstructionType.put( "replace"	     , SPINSTRUCTION_TYPE.ParameterizedBuiltin);
 		String2SPInstructionType.put( "rexpand"	     , SPINSTRUCTION_TYPE.ParameterizedBuiltin);
 		String2SPInstructionType.put( "transform"    , SPINSTRUCTION_TYPE.ParameterizedBuiltin);
+		String2SPInstructionType.put( "transformapply",SPINSTRUCTION_TYPE.ParameterizedBuiltin);
+		String2SPInstructionType.put( "transformdecode",SPINSTRUCTION_TYPE.ParameterizedBuiltin);
+		String2SPInstructionType.put( "transformencode",SPINSTRUCTION_TYPE.MultiReturnBuiltin);
 		
 		String2SPInstructionType.put( "mappend", SPINSTRUCTION_TYPE.MAppend);
 		String2SPInstructionType.put( "rappend", SPINSTRUCTION_TYPE.RAppend);
@@ -256,11 +278,16 @@ public class SPInstructionParser extends InstructionParser
 		
 		String2SPInstructionType.put( "binuaggchain", SPINSTRUCTION_TYPE.BinUaggChain);
 		
-		String2SPInstructionType.put( "write"   , SPINSTRUCTION_TYPE.Write);
+		String2SPInstructionType.put( "write"	, SPINSTRUCTION_TYPE.Write);
+	
+		String2SPInstructionType.put( "castdtm" , SPINSTRUCTION_TYPE.Cast);
+		String2SPInstructionType.put( "castdtf"	, SPINSTRUCTION_TYPE.Cast);
+		
+		String2SPInstructionType.put( "spoof"	, SPINSTRUCTION_TYPE.SpoofFused);
 	}
 
 	public static SPInstruction parseSingleInstruction (String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{
 		if ( str == null || str.isEmpty() )
 			return null;
@@ -268,7 +295,7 @@ public class SPInstructionParser extends InstructionParser
 		SPINSTRUCTION_TYPE cptype = InstructionUtils.getSPType(str); 
 		if ( cptype == null )
 			// return null;
-			throw new DMLUnsupportedOperationException("Invalid SP Instruction Type: " + str);
+			throw new DMLRuntimeException("Invalid SP Instruction Type: " + str);
 		SPInstruction spinst = parseSingleInstruction(cptype, str);
 		if ( spinst == null )
 			throw new DMLRuntimeException("Unable to parse instruction: " + str);
@@ -276,7 +303,7 @@ public class SPInstructionParser extends InstructionParser
 	}
 	
 	public static SPInstruction parseSingleInstruction ( SPINSTRUCTION_TYPE sptype, String str ) 
-		throws DMLUnsupportedOperationException, DMLRuntimeException 
+		throws DMLRuntimeException 
 	{	
 		if ( str == null || str.isEmpty() ) 
 			return null;
@@ -295,6 +322,8 @@ public class SPInstructionParser extends InstructionParser
 				return MapmmChainSPInstruction.parseInstruction(str);
 			case TSMM:
 				return TsmmSPInstruction.parseInstruction(str);
+			case TSMM2:
+				return Tsmm2SPInstruction.parseInstruction(str);	
 			case PMM:
 				return PmmSPInstruction.parseInstruction(str);
 			case ZIPMM:
@@ -312,14 +341,21 @@ public class SPInstructionParser extends InstructionParser
 			case AggregateTernary:
 				return AggregateTernarySPInstruction.parseInstruction(str);
 				
+			case Convolution:
+				 return ConvolutionSPInstruction.parseInstruction(str);
+
 			case MatrixIndexing:
-				return MatrixIndexingSPInstruction.parseInstruction(str);
+				return IndexingSPInstruction.parseInstruction(str);
 				
 			case Reorg:
 				return ReorgSPInstruction.parseInstruction(str);
 				
 			case ArithmeticBinary:
-				return ArithmeticBinarySPInstruction.parseInstruction(str);
+				String opcode = InstructionUtils.getOpCode(str);
+				if( opcode.equals("+*") || opcode.equals("-*")  )
+					return PlusMultSPInstruction.parseInstruction(str);
+				else			
+					return ArithmeticBinarySPInstruction.parseInstruction(str);
 				
 			case RelationalBinary:
 				return RelationalBinarySPInstruction.parseInstruction(str);
@@ -363,20 +399,23 @@ public class SPInstructionParser extends InstructionParser
 			case ParameterizedBuiltin:
 				return ParameterizedBuiltinSPInstruction.parseInstruction(str);
 				
+			case MultiReturnBuiltin:
+				return MultiReturnParameterizedBuiltinSPInstruction.parseInstruction(str);
+				
 			case MatrixReshape:
 				return MatrixReshapeSPInstruction.parseInstruction(str);
 				
-			case MAppend:
+			case MAppend: //matrix/frame
 				return AppendMSPInstruction.parseInstruction(str);
+				
+			case RAppend: //matrix/frame
+				return AppendRSPInstruction.parseInstruction(str);
 			
-			case GAppend:
+			case GAppend: 
 				return AppendGSPInstruction.parseInstruction(str);
 			
 			case GAlignedAppend:
 				return AppendGAlignedSPInstruction.parseInstruction(str);
-				
-			case RAppend:
-				return AppendRSPInstruction.parseInstruction(str);
 				
 			case Rand:
 				return RandSPInstruction.parseInstruction(str);
@@ -407,10 +446,19 @@ public class SPInstructionParser extends InstructionParser
 				
 			case Checkpoint:
 				return CheckpointSPInstruction.parseInstruction(str);
+
+			case Compression:
+				return CompressionSPInstruction.parseInstruction(str);
+			
+			case SpoofFused:
+				return SpoofSPInstruction.parseInstruction(str);
+				
+			case Cast:
+				return CastSPInstruction.parseInstruction(str);
 				
 			case INVALID:
 			default:
-				throw new DMLUnsupportedOperationException("Invalid SP Instruction Type: " + sptype );
+				throw new DMLRuntimeException("Invalid SP Instruction Type: " + sptype );
 		}
 	}
 }

@@ -27,12 +27,12 @@ import java.util.LinkedList;
 
 import org.apache.sysml.api.DMLScript;
 import org.apache.sysml.lops.Lop;
+import org.apache.sysml.parser.DMLProgram;
 import org.apache.sysml.parser.DataIdentifier;
 import org.apache.sysml.parser.Expression.DataType;
 import org.apache.sysml.parser.Expression.ValueType;
 import org.apache.sysml.runtime.DMLRuntimeException;
 import org.apache.sysml.runtime.DMLScriptException;
-import org.apache.sysml.runtime.DMLUnsupportedOperationException;
 import org.apache.sysml.runtime.controlprogram.FunctionProgramBlock;
 import org.apache.sysml.runtime.controlprogram.LocalVariableMap;
 import org.apache.sysml.runtime.controlprogram.caching.MatrixObject;
@@ -41,10 +41,6 @@ import org.apache.sysml.runtime.controlprogram.context.ExecutionContextFactory;
 import org.apache.sysml.runtime.instructions.Instruction;
 import org.apache.sysml.runtime.instructions.InstructionUtils;
 
-
-/**
- * 
- */
 public class FunctionCallCPInstruction extends CPInstruction 
 {	
 	private String _functionName;
@@ -74,16 +70,11 @@ public class FunctionCallCPInstruction extends CPInstruction
 		_boundOutputParamNames = boundOutParamNames;
 		
 	}
-		
-	/**
-	 * Instruction format extFunct:::[FUNCTION NAME]:::[num input params]:::[num output params]:::[list of delimited input params ]:::[list of delimited ouput params]
-	 * These are the "bound names" for the inputs / outputs.  For example, out1 = foo(in1, in2) yields
-	 * extFunct:::foo:::2:::1:::in1:::in2:::out1
-	 * 
-	 */
+
 	public static FunctionCallCPInstruction parseInstruction(String str) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{	
+		//schema: extfunct, fname, num inputs, num outputs, inputs, outputs
 		String[] parts = InstructionUtils.getInstructionPartsWithValueType ( str );
 		String namespace = parts[1];
 		String functionName = parts[2];
@@ -92,25 +83,23 @@ public class FunctionCallCPInstruction extends CPInstruction
 		ArrayList<CPOperand> boundInParamOperands = new ArrayList<CPOperand>();
 		ArrayList<String> boundInParamNames = new ArrayList<String>();
 		ArrayList<String> boundOutParamNames = new ArrayList<String>();
-		
-		int FIRST_PARAM_INDEX = 5;
 		for (int i = 0; i < numInputs; i++) {
-			CPOperand operand = new CPOperand(parts[FIRST_PARAM_INDEX + i]);
+			CPOperand operand = new CPOperand(parts[5 + i]);
 			boundInParamOperands.add(operand);
 			boundInParamNames.add(operand.getName());
 		}
 		for (int i = 0; i < numOutputs; i++) {
-			boundOutParamNames.add(parts[FIRST_PARAM_INDEX + numInputs + i]);
+			boundOutParamNames.add(parts[5 + numInputs + i]);
 		}
 		
-		return new FunctionCallCPInstruction ( namespace,functionName, boundInParamOperands, boundInParamNames, boundOutParamNames, str );
+		return new FunctionCallCPInstruction ( namespace,functionName, 
+				boundInParamOperands, boundInParamNames, boundOutParamNames, str );
 	}
 
-	
-	
+		
 	@Override
 	public Instruction preprocessInstruction(ExecutionContext ec)
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{
 		//default pre-process behavior
 		Instruction tmp = super.preprocessInstruction(ec);
@@ -125,7 +114,7 @@ public class FunctionCallCPInstruction extends CPInstruction
 
 	@Override
 	public void processInstruction(ExecutionContext ec) 
-		throws DMLRuntimeException, DMLUnsupportedOperationException 
+		throws DMLRuntimeException 
 	{		
 		if( LOG.isTraceEnabled() ){
 			LOG.trace("Executing instruction : " + this.toString());
@@ -145,8 +134,7 @@ public class FunctionCallCPInstruction extends CPInstruction
 			ValueType valType = fpb.getInputParams().get(i).getValueType();
 				
 			// CASE (a): default values, if call w/ less params than signature (scalars only)
-			if (   i > _boundInputParamNames.size() 
-				|| (!_boundInputParamOperands.get(i).isLiteral() && ec.getVariable(_boundInputParamNames.get(i)) == null))
+			if( i > _boundInputParamNames.size() )
 			{	
 				String defaultVal = fpb.getInputParams().get(i).getDefaultValue();
 				currFormalParamValue = ec.getScalarInput(defaultVal, valType, false);
@@ -154,12 +142,17 @@ public class FunctionCallCPInstruction extends CPInstruction
 			// CASE (b) literals or symbol table entries
 			else {
 				CPOperand operand = _boundInputParamOperands.get(i);
-				if( operand.getDataType()==DataType.SCALAR )
-					currFormalParamValue = ec.getScalarInput(operand.getName(), operand.getValueType(), operand.isLiteral());
-				else
-					currFormalParamValue = ec.getVariable(operand.getName());					
+				String varname = operand.getName();
+				//error handling non-existing variables
+				if( !operand.isLiteral() && !ec.containsVariable(varname) ) {
+					throw new DMLRuntimeException("Input variable '"+varname+"' not existing on call of " + 
+							DMLProgram.constructFunctionKey(_namespace, _functionName) + " (line "+getLineNum()+").");
+				}
+				//get input matrix/frame/scalar
+				currFormalParamValue = (operand.getDataType()!=DataType.SCALAR) ? ec.getVariable(varname) : 
+					ec.getScalarInput(varname, operand.getValueType(), operand.isLiteral());
 			}
-				
+			
 			functionVariables.put(currFormalParamName,currFormalParamValue);						
 		}
 		
@@ -174,13 +167,15 @@ public class FunctionCallCPInstruction extends CPInstruction
 		
 		// execute the function block
 		try {
+			fpb._functionName = this._functionName;
+			fpb._namespace = this._namespace;
 			fpb.execute(fn_ec);
 		}
 		catch (DMLScriptException e) {
 			throw e;
 		}
 		catch (Exception e){
-			String fname = this._namespace + "::" + this._functionName;
+			String fname = DMLProgram.constructFunctionKey(_namespace, _functionName);
 			throw new DMLRuntimeException("error executing function " + fname, e);
 		}
 		
@@ -209,7 +204,7 @@ public class FunctionCallCPInstruction extends CPInstruction
 			String boundVarName = _boundOutputParamNames.get(i); 
 			Data boundValue = retVars.get(fpb.getOutputParams().get(i).getName());
 			if (boundValue == null)
-				throw new DMLUnsupportedOperationException(boundVarName + " was not assigned a return value");
+				throw new DMLRuntimeException(boundVarName + " was not assigned a return value");
 
 			//cleanup existing data bound to output variable name
 			Data exdata = ec.removeVariable(boundVarName);
@@ -255,11 +250,7 @@ public class FunctionCallCPInstruction extends CPInstruction
 	{
 		return _boundOutputParamNames;
 	}
-	
-	/**
-	 * 
-	 * @param fname
-	 */
+
 	public void setFunctionName(String fname)
 	{
 		//update instruction string
@@ -271,11 +262,6 @@ public class FunctionCallCPInstruction extends CPInstruction
 		instOpcode = fname;
 	}
 
-	/**
-	 * 
-	 * @param pattern
-	 * @param replace
-	 */
 	public String updateInstStringFunctionName(String pattern, String replace)
 	{
 		//split current instruction

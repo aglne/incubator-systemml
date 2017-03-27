@@ -28,7 +28,6 @@ import org.apache.sysml.runtime.matrix.data.OutputInfo;
 import org.apache.sysml.udf.FunctionParameter;
 import org.apache.sysml.udf.Matrix;
 import org.apache.sysml.udf.PackageFunction;
-import org.apache.sysml.udf.PackageRuntimeException;
 import org.apache.sysml.udf.Scalar;
 import org.apache.sysml.udf.Matrix.ValueType;
 
@@ -50,7 +49,7 @@ import org.apache.sysml.udf.Matrix.ValueType;
  * false); B = P %*% A
  * 
  */
-
+@Deprecated
 public class PermutationMatrixWrapper extends PackageFunction 
 {
 	
@@ -70,7 +69,7 @@ public class PermutationMatrixWrapper extends PackageFunction
 		if (pos == 0)
 			return _ret;
 
-		throw new PackageRuntimeException(
+		throw new RuntimeException(
 				"Invalid function output being requested");
 	}
 
@@ -110,17 +109,13 @@ public class PermutationMatrixWrapper extends PackageFunction
 					ValueType.Double);
 			_ret.setMatrixDoubleArray(mb, OutputInfo.BinaryBlockOutputInfo,
 					InputInfo.BinaryBlockInputInfo);
-
-		} catch (Exception e) {
-			throw new PackageRuntimeException(
+		} 
+		catch (Exception e) {
+			throw new RuntimeException(
 					"Error executing external permutation_matrix function", e);
 		}
 	}
 
-	/**
-	 * 
-	 *
-	 */
 	private static class AscRowComparator implements Comparator<double[]> {
 		private int _col = -1;
 
@@ -135,10 +130,6 @@ public class PermutationMatrixWrapper extends PackageFunction
 		}
 	}
 
-	/**
-	 * 
-	 * 
-	 */
 	private static class DescRowComparator implements Comparator<double[]> {
 		private int _col = -1;
 

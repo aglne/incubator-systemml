@@ -42,11 +42,17 @@ public class Binary extends Lop
 
 	private OperationTypes operation;
 	private int numThreads = -1;
+	boolean isLeftTransposed; boolean isRightTransposed; // Used for GPU matmult operation
 	
 	/**
 	 * Constructor to perform a binary operation.
-	 * @param input
-	 * @param op
+	 * 
+	 * @param input1 low-level operator 1
+	 * @param input2 low-level operator 2
+	 * @param op operation type
+	 * @param dt data type
+	 * @param vt value type
+	 * @param et exec type
 	 */
 	public Binary(Lop input1, Lop input2, OperationTypes op, DataType dt, ValueType vt, ExecType et) {
 		this(input1, input2, op, dt, vt, et, 1);
@@ -56,6 +62,14 @@ public class Binary extends Lop
 		super(Lop.Type.Binary, dt, vt);
 		init(input1, input2, op, dt, vt, et);	
 		numThreads = k;
+	}
+	
+	public Binary(Lop input1, Lop input2, OperationTypes op, DataType dt, ValueType vt, ExecType et, 
+			boolean isLeftTransposed, boolean isRightTransposed) {
+		super(Lop.Type.Binary, dt, vt);
+		init(input1, input2, op, dt, vt, et);
+		this.isLeftTransposed = isLeftTransposed;
+		this.isRightTransposed = isRightTransposed;
 	}
 	
 	private void init(Lop input1, Lop input2, OperationTypes op, DataType dt, ValueType vt, ExecType et) 
@@ -76,7 +90,7 @@ public class Binary extends Lop
 			lps.addCompatibility(JobType.REBLOCK);
 			this.lps.setProperties( inputs, et, ExecLocation.Reduce, breaksAlignment, aligner, definesMRJob );
 		}
-		else if ( et == ExecType.CP || et == ExecType.SPARK ){
+		else if ( et == ExecType.CP || et == ExecType.SPARK || et == ExecType.GPU ){
 			lps.addCompatibility(JobType.INVALID);
 			this.lps.setProperties( inputs, et, ExecLocation.ControlProgram, breaksAlignment, aligner, definesMRJob );
 		}
@@ -91,7 +105,7 @@ public class Binary extends Lop
 
 	/**
 	 * method to get operation type
-	 * @return
+	 * @return operation type
 	 */
 	 
 	public OperationTypes getOperationType()
@@ -161,6 +175,15 @@ public class Binary extends Lop
 		}
 	}
 	
+	
+	@Override
+	public String getInstructions(int input_index1, int input_index2, int output_index) throws LopsException {
+		return getInstructions(
+				String.valueOf(input_index1), 
+				String.valueOf(input_index2), 
+				String.valueOf(output_index));
+	}
+	
 	@Override
 	public String getInstructions(String input1, String input2, String output) 
 		throws LopsException 
@@ -183,14 +206,14 @@ public class Binary extends Lop
 		if( operation == OperationTypes.MATMULT && getExecType()==ExecType.CP ) {
 			sb.append( OPERAND_DELIMITOR );
 			sb.append( numThreads );
-		}	
+		}
+		else if( operation == OperationTypes.MATMULT && getExecType()==ExecType.GPU ) {
+			sb.append( OPERAND_DELIMITOR );
+			sb.append( isLeftTransposed );
+			sb.append( OPERAND_DELIMITOR );
+			sb.append( isRightTransposed );
+		}
 		
 		return sb.toString();
-	}
-	
-	@Override
-	public String getInstructions(int input_index1, int input_index2, int output_index) throws LopsException
-	{
-		return getInstructions(input_index1+"", input_index2+"", output_index+"");
 	}
 }
